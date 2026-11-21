@@ -77,6 +77,9 @@ window.__ModuleLoader__.load({
       runId: null,
       devicePolling: false,
       busy: false,
+      realityBusy: false,
+      lastQuery: null,
+      conversation: null,
     })
 
     let ctxRef = null
@@ -329,6 +332,48 @@ window.__ModuleLoader__.load({
       }
     }
 
+    /**
+     * 授权之后的下一个动作：按当前这件事问一次个人现实。
+     * 不自动查（不在启动时全量同步），本人点一下才查；查到的结果进网络。
+     */
+    async function queryRealityFromPanel() {
+      const state = store.get()
+      const task = (state.goal || '').trim() || (state.data?.network?.focus ?? '') || '了解我现在的处境'
+      if (state.realityBusy) return
+      store.set({ realityBusy: true })
+      try {
+        const result = await api('/reality/query', { method: 'POST', body: { task, limit: 10 } })
+        if (!result?.ok) {
+          store.set({ realityBusy: false })
+          toast('这次没读到：' + (result?.detail ?? '未知原因'))
+          return
+        }
+        const facts = result.results?.length ?? 0
+        const conversations = result.conversations?.length ?? 0
+        const summary = facts === 0
+          ? (result.unknowns?.[0]?.message || '这次范围内没有匹配到相关现实——是没有匹配，不是不存在。')
+          : '读到 ' + facts + ' 条个人现实' + (conversations > 0 ? '、' + conversations + ' 段可回溯的对话' : '') + '，已经放到网络上。'
+        store.set({ realityBusy: false, lastQuery: summary })
+        toast(summary)
+        await loadState({ silent: true })
+      } catch (error) {
+        store.set({ realityBusy: false })
+        toast('读取失败：' + error.message)
+      }
+    }
+
+    /** 看某条现实背后的对话原文（逐字，不改写）。 */
+    async function openConversation(conversationId) {
+      if (!conversationId) return
+      try {
+        const result = await api('/reality/conversation', { method: 'POST', body: { conversationId } })
+        if (!result?.ok) { toast(result?.detail ?? '这段对话打不开。'); return }
+        store.set({ conversation: result.conversation })
+      } catch (error) {
+        toast('打开对话失败：' + error.message)
+      }
+    }
+
     // ————————————————————————— 组件 —————————————————————————
 
     function PanelIcon({ size }) {
@@ -461,6 +506,11 @@ window.__ModuleLoader__.load({
             subject ? '当前账号：' + subject + '。' : '当前账号已授权。',
             '只读，只限你本人有权访问的部分；不会在启动时全量同步。撤回入口也在家庭空间「我的 → 隐私和数据」。',
           ].join('')),
+          h('button', {
+            key: 'q', type: 'button', className: 'sl-primary sl-small',
+            onClick: queryRealityFromPanel, disabled: state.realityBusy,
+          }, state.realityBusy ? '正在查…' : '查一下这件事的现实'),
+          state.lastQuery ? h('p', { key: 'r', className: 'sl-hint' }, state.lastQuery) : null,
         ])
       }
       const expired = reality.state === 'expired'
@@ -556,6 +606,7 @@ window.__ModuleLoader__.load({
 
     function TodayView({ data, approval }) {
       const [selected, setSelected] = React.useState(null)
+      const ui = useStore()
       const nodes = data?.network?.nodes ?? []
       const empty = nodes.length === 0
 
@@ -580,9 +631,23 @@ window.__ModuleLoader__.load({
             selected.openable?.kind === 'session'
               ? h('button', { key: 'o', type: 'button', className: 'sl-quiet sl-small', onClick: () => openNativeSession(selected.openable.target) }, '打开原生会话')
               : null,
+            selected.openable?.kind === 'conversation'
+              ? h('button', { key: 'c', type: 'button', className: 'sl-quiet sl-small', onClick: () => openConversation(selected.openable.target) }, '看原始对话证据')
+              : null,
             selected.openable?.kind === 'artifact'
               ? h('a', { key: 'a', className: 'sl-link-btn', href: API + '/artifact?path=' + encodeURIComponent(selected.openable.target), target: '_blank', rel: 'noreferrer noopener' }, '打开成果')
               : null,
+            ui.conversation ? h('div', { key: 'conversation', className: 'sl-conversation' }, [
+              h('div', { key: 'h', className: 'sl-row' }, [
+                h('strong', { key: 't' }, ui.conversation.title || '对话原文'),
+                h('button', { key: 'x', type: 'button', className: 'sl-quiet sl-small', onClick: () => store.set({ conversation: null }) }, '收起'),
+              ]),
+              h('p', { key: 'm', className: 'sl-muted' }, '逐字原文，未改写；只包含你有权访问的对话。'),
+              h('ul', { key: 'l', className: 'sl-messages' }, (ui.conversation.messages ?? []).slice(0, 20).map((message) => h('li', { key: message.id }, [
+                h('span', { key: 'w', className: 'sl-who' }, message.speakerRef === 'self' ? '本人' : message.speakerRef === 'ai' ? '家明' : '未知'),
+                h('span', { key: 't', className: 'sl-msg-text' }, message.text),
+              ]))),
+            ]) : null,
           ]) : null,
           h('p', { key: 'hint', className: 'sl-hint' }, (data?.network?.hiddenCount ?? 0) > 0
             ? '还有 ' + data.network.hiddenCount + ' 个真实节点收在详情里。这里只放跟当前这件事有关的。'
@@ -846,6 +911,11 @@ window.__ModuleLoader__.load({
 .sl-approval p{margin:0;font-size:12px;color:var(--dsw-alias-label-primary)}
 .sl-approval-inline{font-size:11.5px;color:var(--dsw-alias-state-warn-primary);margin:0;text-align:center}
 .sl-error-note{font-size:11.5px;color:var(--dsw-alias-state-error-primary);margin:4px 0 0}
+.sl-conversation{margin-top:8px;border-top:1px dashed var(--dsw-alias-border-l1);padding-top:8px;display:flex;flex-direction:column;gap:4px}
+.sl-messages{list-style:none;margin:2px 0 0;padding:0;display:flex;flex-direction:column;gap:6px;max-height:220px;overflow:auto}
+.sl-messages li{display:flex;gap:6px;font-size:11.5px;line-height:1.5}
+.sl-who{flex:0 0 30px;color:var(--dsw-alias-label-secondary)}
+.sl-msg-text{flex:1;min-width:0;white-space:pre-wrap;word-break:break-word}
 .sl-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:10px}
 .sl-list-item{border:1px solid var(--dsw-alias-border-l1);border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:3px;background:var(--dsw-alias-bg-layer-1)}
 .sl-error{border:1px solid var(--dsw-alias-state-error-primary);border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:8px;align-items:flex-start}

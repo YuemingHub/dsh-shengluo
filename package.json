@@ -1,6 +1,6 @@
 {
   "name": "@shengluo/dsh-plugin",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "type": "module",
   "description": "生络 ShengLuo：以人为单位的个人智能伙伴。原生 DSH 侧栏入口、语义神经网络、真实原生会话与成果。",
   "license": "MIT",
