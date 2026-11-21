@@ -1,0 +1,41 @@
+{
+  "meta": {
+    "title": "ShengLuo",
+    "description": "A personal intelligence partner for one person: a single intelligence core surrounded by the real projects, personal reality, goals, execution and artifacts behind the current piece of work, driven by natural language and completed in native DSH sessions with native approvals and artifact preview.",
+    "detail": "docs/DETAIL.md"
+  },
+  "panel": {
+    "label": "ShengLuo",
+    "nav": {
+      "today": "Today",
+      "projects": "Projects",
+      "artifacts": "Artifacts",
+      "knowledge": "Knowledge",
+      "plugins": "Plugins"
+    },
+    "composer": "What do you want to move forward today?",
+    "composerHint": "One sentence is enough. I stop and ask where your decision is needed.",
+    "next": "Next step",
+    "start": "Start work",
+    "stop": "Stop",
+    "revise": "Revise",
+    "openArtifact": "Open artifact",
+    "openSession": "Go to session",
+    "connectReality": "Connect personal reality",
+    "revoke": "Revoke access",
+    "realityUnauthorized": "Personal reality: not authorized",
+    "realityAuthorized": "Personal reality: authorized",
+    "realityUnknown": "Unknown",
+    "rightTitle": "What I am working on",
+    "understandingTitle": "My current understanding",
+    "sourcesTitle": "Reality and material used",
+    "nextStepTitle": "Next step",
+    "decisionsTitle": "Waiting on you",
+    "emptyNetwork": "No real node yet. Start from a real project, or from one sentence.",
+    "approvalWaiting": "An approval is waiting. Allow or deny it in the native DSH session.",
+    "running": "Working",
+    "completed": "Completed",
+    "failed": "Stopped",
+    "pluginsNote": "These are the real native plugins of this machine's DSH profile."
+  }
+}

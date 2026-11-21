@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="生络 ShengLuo">
+  <defs>
+    <radialGradient id="sl-core" cx="38%" cy="30%" r="72%">
+      <stop offset="0" stop-color="#F6EEDD"/>
+      <stop offset="45%" stop-color="#D9A35F"/>
+      <stop offset="100%" stop-color="#8C6A3C"/>
+    </radialGradient>
+    <linearGradient id="sl-ring" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#79B8A6"/>
+      <stop offset="1" stop-color="#D9A35F"/>
+    </linearGradient>
+  </defs>
+  <circle cx="32" cy="32" r="21" fill="none" stroke="url(#sl-ring)" stroke-width="1.6" stroke-dasharray="3 4" opacity="0.85"/>
+  <circle cx="32" cy="32" r="13" fill="url(#sl-core)"/>
+  <path d="M32 23.5c-3.6 0-6.2 2.5-6.2 5.7 0 2 1 3.4 2.4 4.6 1.6 1.4 2.1 2.6 2.1 4v1.6h3.4v-1.8c0-1.6.5-2.7 2-4 1.4-1.2 2.4-2.6 2.4-4.6 0-3.2-2.6-5.5-6.1-5.5zm-1.9 18.6h3.8v1.6c0 1.1-.9 2-1.9 2s-1.9-.9-1.9-2z" fill="#0D1316" opacity="0.82"/>
+  <g fill="#F6EEDD">
+    <circle cx="32" cy="6.5" r="3"/>
+    <circle cx="55.5" cy="20" r="2.6"/>
+    <circle cx="55.5" cy="44" r="2.6"/>
+    <circle cx="32" cy="57.5" r="2.6"/>
+    <circle cx="8.5" cy="44" r="2.6"/>
+    <circle cx="8.5" cy="20" r="2.6"/>
+  </g>
+  <g stroke="#F6EEDD" stroke-width="1.1" opacity="0.5">
+    <line x1="32" y1="6.5" x2="32" y2="19"/>
+    <line x1="55.5" y1="20" x2="42.5" y2="26"/>
+    <line x1="55.5" y1="44" x2="42.5" y2="38"/>
+    <line x1="32" y1="57.5" x2="32" y2="45"/>
+    <line x1="8.5" y1="44" x2="21.5" y2="38"/>
+    <line x1="8.5" y1="20" x2="21.5" y2="26"/>
+  </g>
+</svg>

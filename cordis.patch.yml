@@ -1,0 +1,138 @@
+# 生络 ShengLuo — DSH 原生插件 bundle patch
+# 两行：`shengluo` 是插件本体（Host + Client 半个面板 + /sl/api 产品层接口）；
+# `preset-shengluo` 注册「生络伙伴」Agent preset，用一个只属于生络的入口承载它。
+- insert:
+    - id: shengluo
+      name: '@shengluo/dsh-plugin'
+
+    # 「生络伙伴」Agent preset。
+    # 子插件清单照抄本版本 DSH 自带 standard preset 的可用集合（0.2.2-rc.5），
+    # 只把 persona 换成生络的伙伴守则。改到装不上的插件会让整个 preset 变 broken，
+    # 所以这里只写当前版本确实存在的包。
+    - id: preset-shengluo
+      name: '@shengluo/dsh-plugin/preset'
+      config:
+        id: shengluo
+        name: 生络伙伴
+        description: 以你真实需要为出发点的个人智能伙伴：先理解现实，再判断下一步，借 DSH 原生能力真正执行，留下可核对的成果。
+        order: 0.5
+        plugins:
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: |-
+                你是「生络」，这个人的个人智能伙伴，运行在 DeepSeek Harness 上。
+
+                你的出发点永远是这个人真实的处境和需要，不是任务本身好看。你会先弄清楚：这件事对他意味着什么、现在卡在哪、他自己已经说过什么。
+
+                守则：
+                - 历史推断不能覆盖当下的明确表达。他刚刚说的话，永远比你对他的历史总结更权威。冲突时以当下为准，并说明你改了哪一条理解。
+                - 不确定就说明未知。没有资料来源时写「未知」，不要说成事实；引用个人现实时带上来源、时间、归属和事实/推断状态。
+                - 不冒充本人。你不代他发言、不署他的名、不假装自己是他。
+                - 不替他做高影响决定。涉及钱、承诺、他人、公开、删除、不可撤回的动作，停下来把选项和后果讲清楚，让他定。
+                - 使用他的个人现实必须经过授权。未授权时明确显示「尚未授权」，绝不把测试数据或推断说成他的生活。
+                - 结果必须可核对。声称完成前，给出真实产物（文件路径、可打开的东西、真实命令输出）；做不到就如实说没做到。
+
+                做事方式：用 DSH 原生工具真正执行——读文件、写文件、跑命令、查资料、开子 Agent；需要审批时会回到原生界面由他决定。不要用漂亮的总结代替实际动作，也不要在没有执行的情况下宣称成果。产出物放进项目目录，能回到原会话和原项目继续。
+
+                说话用他的语言，直接、具体、像一个人，不像系统提示。
+          - id: agent-instructions
+            name: '@deepseek-ai/dsh-agent-instructions'
+            config:
+              maxBytes: 65536
+          - id: time-context
+            name: '@deepseek-ai/dsh-time-context'
+          - id: tool-bash
+            name: '@deepseek-ai/dsh-tool-bash'
+            disabled: !!js process.platform === 'win32'
+          - id: tool-pwsh
+            name: '@deepseek-ai/dsh-tool-pwsh'
+            disabled: !!js process.platform !== 'win32'
+          - id: tool-fs
+            name: '@deepseek-ai/dsh-tool-fs'
+            config:
+              applyPatch: false
+          - id: tool-fs-search
+            name: '@deepseek-ai/dsh-tool-fs-search'
+            config:
+              sampleOverCapGlobResults: false
+          - id: tool-jobs
+            name: '@deepseek-ai/dsh-tool-jobs'
+          - id: tool-schedule
+            name: '@deepseek-ai/dsh-tool-schedule'
+          - id: skill-filesystem
+            name: '@deepseek-ai/dsh-skill-filesystem'
+            config:
+              # DSH 自带技能目录（dsh-doc 等）。旧版本没有这个目录时返回 []，不让整行起不来。
+              customSkillDirs: !!js "(() => { try { const p = process.getBuiltinModule('node:path'); const d = p.join(p.dirname(process.getBuiltinModule('node:module').createRequire(baseUrl).resolve('@deepseek-ai/dsh-agent-preset/package.json')), 'skills'); return process.getBuiltinModule('node:fs').existsSync(d) ? [d] : [] } catch { return [] } })()"
+          - id: tool-skill
+            name: '@deepseek-ai/dsh-tool-skill'
+          - id: command-goal
+            name: '@deepseek-ai/dsh-command-goal'
+          - id: tool-goal
+            name: '@deepseek-ai/dsh-tool-goal'
+          - id: compaction
+            name: cordis:group
+            group: true
+            isolate:
+              compaction: true
+              toolResultPruner: true
+            config:
+              - id: compaction-basic
+                name: '@deepseek-ai/dsh-compaction-basic'
+              - id: command-compact
+                name: '@deepseek-ai/dsh-command-compact'
+              - id: tool-result-pruner
+                name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+                config:
+                  thresholdChars: 8192
+                  headChars: 4096
+                  tailChars: 1024
+          - id: delegation
+            name: cordis:group
+            group: true
+            isolate:
+              workflowEngine: true
+            config:
+              - id: tool-subagent-control
+                name: '@deepseek-ai/dsh-tool-subagent-control'
+                config:
+                  interrupt: false
+              - id: tool-subagent
+                name: '@deepseek-ai/dsh-tool-subagent'
+                config:
+                  provider: spawn
+                  toolName: subagent
+                  modelSelection: true
+                  modelDiscovery: true
+              - id: tool-subagent-fork
+                name: '@deepseek-ai/dsh-tool-subagent'
+                config:
+                  provider: fork
+                  toolName: subagent_fork
+              # workflow-ptc 在这个 isolate 域里提供 workflowEngine；
+              # 少了它，tool-workflow 会一直等 workflowEngine，整个 preset 变成 invalid。
+              - id: workflow-ptc
+                name: '@deepseek-ai/dsh-workflow-ptc'
+                config:
+                  provider: spawn
+              - id: tool-workflow
+                name: '@deepseek-ai/dsh-tool-workflow'
+                config:
+                  provider: spawn
+          - id: tool-ask-user
+            name: '@deepseek-ai/dsh-tool-ask-user'
+          - id: tool-todo
+            name: '@deepseek-ai/dsh-tool-todo'
+            config:
+              allowParallelInProgress: true
+          - id: tool-web
+            name: '@deepseek-ai/dsh-tool-web'
+            config:
+              fetch: true
+              searchTimeoutMs: 60000
+          - id: present
+            name: '@deepseek-ai/dsh-tool-present'
+          - id: tool-plugin-manager
+            name: '@deepseek-ai/dsh-plugin-manager/tools'
+            disabled: !!js "!ctx.get('profileContext')"

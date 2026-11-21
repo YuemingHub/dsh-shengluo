@@ -1,0 +1,41 @@
+{
+  "meta": {
+    "title": "生络",
+    "description": "以人为单位的个人智能伙伴：围绕一个智能核心看真实项目、个人现实、目标、执行和成果，用自然语言推进事情，并在 DSH 原生会话里完成审批、执行与成果预览。",
+    "detail": "docs/DETAIL.md"
+  },
+  "panel": {
+    "label": "生络",
+    "nav": {
+      "today": "今天",
+      "projects": "项目",
+      "artifacts": "成果",
+      "knowledge": "知识",
+      "plugins": "插件"
+    },
+    "composer": "今天你想推进什么？",
+    "composerHint": "说一句话就够了。需要你决定的地方，我会停下来问你。",
+    "next": "下一步",
+    "start": "开始工作",
+    "stop": "停下",
+    "revise": "改一下",
+    "openArtifact": "打开成果",
+    "openSession": "前往会话",
+    "connectReality": "连接个人现实",
+    "revoke": "撤销授权",
+    "realityUnauthorized": "个人现实：尚未授权",
+    "realityAuthorized": "个人现实：已授权",
+    "realityUnknown": "未知",
+    "rightTitle": "当前正在处理的事情",
+    "understandingTitle": "生络目前的理解",
+    "sourcesTitle": "用了哪些现实和资料",
+    "nextStepTitle": "下一步",
+    "decisionsTitle": "待你决定",
+    "emptyNetwork": "还没有真实节点。先从一个真实项目或一句话开始。",
+    "approvalWaiting": "有一个审批在等你。请在 DSH 原生会话里允许或拒绝。",
+    "running": "正在执行",
+    "completed": "已完成",
+    "failed": "已停止",
+    "pluginsNote": "下面是他本机 DSH profile 的真实原生插件清单。"
+  }
+}

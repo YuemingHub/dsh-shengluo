@@ -1,0 +1,67 @@
+{
+  "name": "@shengluo/dsh-plugin",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "生络 ShengLuo：以人为单位的个人智能伙伴。原生 DSH 侧栏入口、语义神经网络、真实原生会话与成果。",
+  "license": "MIT",
+  "engines": {
+    "node": ">=24.0.0",
+    "dsh": ">=0.2.2-rc.5 <0.3.0-0"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./preset": "./lib/preset.mjs",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "lib",
+    "locale",
+    "docs",
+    "cordis.patch.yml",
+    "icon.svg",
+    "README.md",
+    "LICENSE"
+  ],
+  "icon": "./icon.svg",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-workspace",
+        "@deepseek-ai/dsh-client-ui-session",
+        "@deepseek-ai/dsh-api-session-controller",
+        "@deepseek-ai/dsh-client-locale"
+      ]
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/YuemingHub/dsh-shengluo.git"
+  },
+  "homepage": "https://github.com/YuemingHub/dsh-shengluo",
+  "bugs": {
+    "url": "https://github.com/YuemingHub/dsh-shengluo/issues"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "shengluo",
+    "personal-intelligence",
+    "family-space"
+  ],
+  "scripts": {
+    "test": "node tests/run-all.mjs",
+    "build:client": "node scripts/build-plugin-client.mjs"
+  }
+}
