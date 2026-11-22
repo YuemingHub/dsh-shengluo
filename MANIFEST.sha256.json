@@ -2,8 +2,8 @@
   "package": "@shengluo/dsh-plugin",
   "version": "1.0.2",
   "sourceRepo": "https://github.com/YuemingHub/ShengLuo",
-  "sourceCommit": "99ce2ac64f79eefdfeb4c6e4a3260b345b299abb",
-  "generatedAt": "2026-11-22T17:53:34.498Z",
+  "sourceCommit": "d6838795ffb1aa9c5ce8d52744fd4b2c8342fe76",
+  "generatedAt": "2026-11-22T18:13:56.199Z",
   "files": [
     {
       "path": "client.js",
@@ -127,8 +127,8 @@
     },
     {
       "path": "lib/workspace.mjs",
-      "size": 2673,
-      "sha256": "1f56cdf4ff2a695660eafd2977b7a2c8bc53bb237bf5069c54b75a38100f73c4"
+      "size": 3246,
+      "sha256": "e4b58aae65cd4b9c288692a96daf7712fac76eb1837f42a9c064a3cf61d51a13"
     },
     {
       "path": "locale/en.json",
