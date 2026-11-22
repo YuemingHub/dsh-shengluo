@@ -1,15 +1,16 @@
 /* 生络 DSH plugin client — original code; no embedded runtime or graph canvas vendor. */
 /**
- * 生络 ShengLuo — DSH 原生插件（Client 半个）。
+ * 生络 — DSH 原生插件（Client 半个，V2）。
  *
  * 一个入口（侧栏「生络」）→ 一块主面板：
- *   左侧导航：今天 / 项目 / 成果 / 知识 / 插件
+ *   左侧导航：今天 / 目标 / 项目 / 成果 / 知识 / 连接
  *   中间：一个生络智能核心 + 围绕它的真实语义节点（默认 5–9 个）
- *   右侧：当前正在处理的事情 / 生络目前的理解 / 用了哪些现实和资料 / 下一步 / 待你决定
- *   底部：一句自然语言 ——「今天你想推进什么？」
+ *   右侧：三页签 —— 当前工作 / 理解与依据 / 轨迹
+ *   底部：一句自然语言输入
  *
  * 执行不在这里：会话、工具、审批、文件预览全是 DSH 原生的。
- * 面板只做两件事：把真实状态说清楚，把本人送到原生界面去决定。
+ * 面板只做三件事：把真实状态说清楚、把真实事件画出来、把本人送到原生界面去决定。
+ * 光流只跟随真实事件（tool/call、tool/result、审批、验收）；没有活动时保持安静。
  */
 window.__ModuleLoader__.load({
   id: '@shengluo/dsh-plugin',
@@ -19,31 +20,53 @@ window.__ModuleLoader__.load({
     const NS = 'shengluo'
     const PANEL_ID = 'shengluo'
     const API = '/sl/api'
+    const PULSE_TTL = 1400
 
     const KIND = {
-      reality: { label: '我的现实', tone: 'amber' },
-      goal: { label: '目标', tone: 'blue' },
-      project: { label: '项目', tone: 'teal' },
-      task: { label: '执行', tone: 'violet' },
-      artifact: { label: '成果', tone: 'rose' },
-      decision: { label: '待你决定', tone: 'amber' },
-      knowledge: { label: '知识', tone: 'slate' },
-    }
-
-    const STATUS_LABEL = {
-      running: '正在做',
-      completed: '已完成',
-      failed: '已如实停下',
-      stopped: '已停下',
+      reality: { label: '我的现实', tone: 'amber', slot: -150 },
+      goal: { label: '目标', tone: 'blue', slot: -90 },
+      knowledge: { label: '知识', tone: 'slate', slot: -30 },
+      project: { label: '项目', tone: 'teal', slot: 150 },
+      task: { label: '执行', tone: 'violet', slot: 90 },
+      step: { label: '步骤', tone: 'violet', slot: 90 },
+      artifact: { label: '成果', tone: 'rose', slot: 30 },
+      verification: { label: '验证', tone: 'teal', slot: 30 },
+      decision: { label: '待你决定', tone: 'amber', slot: 0 },
+      candidate: { label: '可沉淀', tone: 'slate', slot: 60 },
+      registry: { label: '项目登记', tone: 'slate', slot: 205 },
+      understanding: { label: '理解', tone: 'blue', slot: -60 },
+      correction: { label: '纠正', tone: 'amber', slot: -110 },
     }
 
     const NAV = [
       { id: 'today', label: '今天' },
+      { id: 'goals', label: '目标' },
       { id: 'projects', label: '项目' },
       { id: 'artifacts', label: '成果' },
       { id: 'knowledge', label: '知识' },
-      { id: 'plugins', label: '插件' },
+      { id: 'connect', label: '连接' },
     ]
+
+    const PHASE_TEXT = {
+      preparing: ['准备中', '正在为这件事做准备。'],
+      understanding: ['理解问题', '正在读你说的这件事，先判断它是什么。'],
+      gathering: ['寻找依据', '正在按需要查个人现实、知识和项目文件。'],
+      judging: ['形成判断', '正在把依据收拢成一个判断，并标出还不确定的地方。'],
+      executing: ['执行中', '正在用 DSH 原生工具做事；需要你定的地方会停下来。'],
+      'waiting-for-you': ['等你决定', '有一步需要你点头，回到原生会话里处理。'],
+      verifying: ['验收结果', '正在按真实文件检查这次到底做成了什么。'],
+      completed: ['完成', '这件事已经做完，结果和依据都在右边。'],
+      failed: ['如实停下', '这次没有做成；停在哪儿、为什么，都写在右边。'],
+      'stopped-by-owner': ['按你的决定停下', '你拒绝了这一步，我按你的决定停下了。'],
+    }
+
+    const STATUS_TEXT = {
+      running: '正在做',
+      completed: '已完成（验收通过）',
+      answered: '已答复',
+      failed: '如实停下',
+      'stopped-by-owner': '按你的决定停下',
+    }
 
     // ————————————————————————— 很小的 store（面板切换会卸载，状态要活在外面） —————————————————————————
 
@@ -64,32 +87,40 @@ window.__ModuleLoader__.load({
     }
 
     const store = createTinyStore({
-      view: 'today',
-      goal: '',
-      phase: 'idle', // idle | confirm | working
-      data: null,
-      loading: true,
+      loaded: false,
+      loading: false,
       error: null,
-      toast: null,
-      pendingDevice: null,
-      pollTimer: null,
+      data: null,
+      view: 'today',
+      rightTab: 'work',
+      selectedId: null,
+      goal: '',
+      busy: false,
       sessionId: null,
       runId: null,
-      devicePolling: false,
-      busy: false,
-      realityBusy: false,
-      lastQuery: null,
+      pulses: [],
+      toast: null,
+      device: null,
       conversation: null,
+      knowledge: { query: '', result: null, busy: false },
+      candidateTarget: '',
+      correctionText: '',
+      today: null,
+      todayBusy: false,
+      reducedMotion: false,
     })
 
     let ctxRef = null
     let attached = false
     let eventSource = null
     let pollTimer = null
+    let deviceTimer = null
 
-    const useStore = () => React.useSyncExternalStore(store.subscribe, store.get, store.get)
-
-    // ————————————————————————— 本机接口 —————————————————————————
+    function useStore() {
+      const [, force] = React.useReducer((x) => x + 1, 0)
+      React.useEffect(() => store.subscribe(force), [])
+      return store.get()
+    }
 
     async function api(path, options) {
       const response = await fetch(API + path, {
@@ -115,18 +146,23 @@ window.__ModuleLoader__.load({
       setTimeout(() => { if (store.get().toast === message) store.set({ toast: null }) }, 4200)
     }
 
+    function pushPulse(kind, step) {
+      const id = 'pulse-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6)
+      store.set((state) => ({ pulses: [...state.pulses, { id, kind, step: step ?? null, at: Date.now() }].slice(-10) }))
+      setTimeout(() => store.set((state) => ({ pulses: state.pulses.filter((pulse) => pulse.id !== id) })), PULSE_TTL)
+    }
+
     async function loadState({ silent = false } = {}) {
       if (!silent) store.set({ loading: true })
       try {
         const data = await api('/state')
         const active = data.activeRun
-        const patch = { data, loading: false, error: null }
-        // 后台推进/完成后，把面板状态和真实运行状态对齐，不自己编状态。
+        const patch = { data, loading: false, error: null, loaded: true }
         if (active) {
           patch.sessionId = active.sessionId
           patch.runId = active.runId
-          if (active.status === 'running') patch.phase = 'working'
         }
+        if (data.today) patch.today = data.today
         store.set(patch)
         return data
       } catch (error) {
@@ -135,36 +171,53 @@ window.__ModuleLoader__.load({
       }
     }
 
+    async function scanToday() {
+      store.set({ todayBusy: true })
+      try {
+        const result = await api('/today/scan', { method: 'POST' })
+        store.set({ todayBusy: false, today: result.today ?? null })
+      } catch (error) {
+        store.set({
+          todayBusy: false,
+          today: { at: null, state: 'error', items: [], note: '今天没能读完来源。', errors: [error.message], realityState: 'unknown' },
+        })
+      }
+    }
+
     function attach() {
       if (attached || !ctxRef) return
       attached = true
+      try { store.set({ reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches }) } catch { /* 不支持就按动效处理 */ }
       loadState()
+      scanToday()
       try {
         eventSource = new EventSource(API + '/stream')
         eventSource.onmessage = (event) => {
           let payload = null
           try { payload = JSON.parse(event.data) } catch { return }
           if (!payload || !payload.type) return
-          if (payload.type === 'run/activity' || payload.type === 'run/end' || payload.type === 'run/decision'
-            || payload.type === 'run/approval-decided' || payload.type === 'network/changed'
-            || payload.type === 'reality/linked' || payload.type === 'reality/revoked') {
-            loadState({ silent: true })
-          }
+          if (payload.type === 'run/step-start') pushPulse('moving', payload.step)
+          if (payload.type === 'run/step-end') pushPulse(payload.step?.status === 'failed' ? 'failed' : 'ok', payload.step)
+          if (payload.type === 'run/verified') pushPulse('verified', null)
+          const refresh = [
+            'run/step-start', 'run/step-end', 'run/understanding', 'run/understanding-invalid',
+            'run/decision', 'run/approval-decided', 'run/end', 'run/verified',
+            'run/candidate-written', 'network/changed', 'reality/linked', 'reality/revoked', 'understanding/corrected',
+          ]
+          if (payload.type === 'today/changed' && payload.today) store.set({ today: payload.today })
+          if (refresh.includes(payload.type)) loadState({ silent: true })
           if (payload.type === 'run/end') {
-            const status = payload.status
-            if (status === 'failed') {
-              toast('这次如实停下了' + (payload.note ? '：' + payload.note : '，没有假装完成。'))
-            }
-            if (status === 'completed') toast('这件事完成了，成果在右边。')
+            if (payload.status === 'failed') toast('这次如实停下了' + (payload.note ? '：' + payload.note : '，没有假装完成。'))
+            if (payload.status === 'completed') toast('这件事完成了，验收结果在右边。')
+            if (payload.status === 'stopped-by-owner') toast('已按你的决定停下。')
           }
         }
         eventSource.onerror = () => { /* EventSource 自己重连 */ }
       } catch {
-        // 没有 SSE 就退回慢轮询，功能不丢。
         pollTimer = setInterval(() => loadState({ silent: true }), 4000)
       }
       return () => {
-        if (eventSource) { try { eventSource.close() } catch {} eventSource = null }
+        if (eventSource) { try { eventSource.close() } catch { /* 已经关了 */ } eventSource = null }
         if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
         attached = false
       }
@@ -173,8 +226,21 @@ window.__ModuleLoader__.load({
     // ————————————————————————— 原生会话 —————————————————————————
 
     function currentCwd(data) {
+      // 优先用生络显式配置的运行工作区；没有配置时才提交活动工作区，
+      // 由 Host 按允许根目录校验——越界会明确报错，不会静默落到别的工作区。
+      const configured = data?.runWorkspace?.defaultCwd
+      if (configured) return configured
       const project = (data?.network?.workspaces ?? []).find((workspace) => workspace.active) ?? null
       return project?.path ?? null
+    }
+
+    /** 启动时就检查会话接口：缺 create/retain 时明确报错，不静默降级、不假装已开始。 */
+    function sessionApiState() {
+      const api = ctxRef && ctxRef.sessions
+      const available = Boolean(api) && typeof api === 'object'
+      const canCreate = available && typeof api.create === 'function'
+      const canRetain = available && typeof api.retain === 'function'
+      return { available, canCreate, canRetain, ok: available && canCreate && canRetain }
     }
 
     async function beginWork() {
@@ -182,30 +248,36 @@ window.__ModuleLoader__.load({
       const goal = state.goal.trim()
       if (!goal || state.busy) return
       const data = state.data
+      const sessionApi = sessionApiState()
+      if (!sessionApi.ok) {
+        const missing = !sessionApi.available ? 'sessions' : [!sessionApi.canCreate ? 'create' : null, !sessionApi.canRetain ? 'retain' : null].filter(Boolean).join(' / ')
+        toast('当前 DSH 版本缺少会话接口（' + missing + '），这次没有开始；请升级 DSH 或把版本号发给开发者。')
+        return
+      }
       store.set({ busy: true })
+      let sessionId = null
       try {
-        // 1) 真实原生会话：agentPreset = 生络伙伴（本插件注册的 preset）。
-        const sessionId = await ctxRef.sessions.create({ agentPreset: 'shengluo', cwd: currentCwd(data) ?? undefined })
-        // 2) 保留引用后投递这条目标 —— 走的是 DSH 原生提示通道，不是自己的任务系统。
+        sessionId = await ctxRef.sessions.create({ agentPreset: 'shengluo', cwd: currentCwd(data) ?? undefined })
+        // 先登记 run，再投递 prompt：否则最早几个事件（tool/call 等）会因为 run 还没登记而被丢掉。
+        const started = await api('/run/start', { method: 'POST', body: { sessionId, goal, cwd: currentCwd(data) } })
+        store.set({ sessionId, runId: started.runId, rightTab: 'work' })
         const reference = ctxRef.sessions.retain(sessionId, { source: 'mainView' })
         const binding = await reference.ready
-        const contract = contractLines(data)
-        const prompt = [
-          goal,
-          '',
-          '（来自生络面板。先确认再动手：）',
-          '我会用到：' + contract.uses.join('；'),
-          '我会交付：' + contract.delivers.join('；'),
-          '需要你定：' + contract.decisions.join('；'),
-        ].join('\n')
-        const result = await binding.session.prompt([{ type: 'text', text: prompt }], 'queue')
+        // 面板只发原话时，模型会把「这个」当成刚安装的插件（2026-11-22 S1 尝试 1 的失败证据）。
+        // 最小必要上下文：说明来自生络面板、个人现实已授权只读；不注入历史、不扩大权限。
+        const panelPrompt = `（这条消息来自生络面板；用户正看着生络。你可以只读使用他已授权的个人现实，仅限他本人可访问部分。）
+
+${goal}`
+        const result = await binding.session.prompt([{ type: 'text', text: panelPrompt }], 'queue')
         if (result && result.ok === false) throw new Error(result.error?.message ?? '原生会话没接受这条请求')
-        // 3) 登记到产品层（只登记 id，不接管执行）。
-        const started = await api('/run/start', { method: 'POST', body: { sessionId, goal, cwd: currentCwd(data) } })
-        store.set({ phase: 'working', sessionId, runId: started.runId, busy: false })
+        store.set({ busy: false, goal: '' })
         await loadState({ silent: true })
       } catch (error) {
         store.set({ busy: false })
+        // 已经登记过 run 的，如实标成失败——不留一个永远「进行中」的影子。
+        if (sessionId) {
+          try { await api('/run/status', { method: 'POST', body: { status: 'failed', endReason: 'prompt-not-accepted' } }) } catch { /* 尽力而为 */ }
+        }
         toast('没能开始：' + error.message)
       }
     }
@@ -217,7 +289,7 @@ window.__ModuleLoader__.load({
         const reference = ctxRef.sessions.retain(sessionId, { source: 'mainView' })
         const binding = await reference.ready
         await binding.session.cancel()
-        await api('/run/status', { method: 'POST', body: { status: 'failed', phase: 'stopped', endReason: 'cancelled-by-owner' } })
+        await api('/run/status', { method: 'POST', body: { status: 'stopped-by-owner', phase: 'stopped-by-owner', endReason: 'cancelled-by-owner' } })
         toast('已停下。')
         await loadState({ silent: true })
       } catch (error) {
@@ -228,10 +300,8 @@ window.__ModuleLoader__.load({
     function openNativeSession(sessionId) {
       if (!sessionId) return
       try {
-        // 去原生会话就是真的去：openSession 会把主区切到那个 Conversation，
-        // 审批卡片、工具结果、文件预览都在那里。不要立刻把面板抢回来 ——
-        // 那会让用户看不到审批，等于把"回原生界面决定"这件事做废。
-        // 想回生络，点左侧栏的「生络」即可（layout.selectPanel 由侧栏负责）。
+        // 去原生会话就是真的去：审批卡片、工具结果、文件预览都在那里。
+        // 不立刻把面板抢回来——那会让用户看不到审批，等于把「回原生界面决定」做废。
         ctxRef.uiWorkspace.openSession(sessionId)
       } catch (error) {
         toast('打开原生会话失败：' + error.message)
@@ -242,637 +312,1098 @@ window.__ModuleLoader__.load({
       try { ctxRef.layout.selectPanel('plugins') } catch (error) { toast('打开原生插件管理失败：' + error.message) }
     }
 
-    // ————————————————————————— 三条契约（完全由真实状态推出，不是假计划） —————————————————————————
-
-    function contractLines(data) {
-      const network = data?.network ?? {}
-      const reality = data?.reality ?? {}
-      const workspaces = network.workspaces ?? []
-      const knowledge = network.knowledge ?? []
-      const artifacts = network.artifacts ?? []
-      const uses = []
-      const activeProject = workspaces.find((workspace) => workspace.active) ?? workspaces[0] ?? null
-      uses.push(activeProject ? '项目「' + activeProject.title + '」里的真实文件' : '当前 DSH 工作区的真实文件')
-      if (knowledge.length > 0) uses.push(knowledge.length + ' 条知识（' + knowledge[0].label + '）')
-      if (reality.state === 'authorized') uses.push('你的个人现实（已授权，只读，仅本人可访问部分）')
-      const delivers = []
-      delivers.push('写在' + (activeProject ? '「' + activeProject.title + '」目录' : '工作区目录') + '里、能直接打开的文件')
-      if (artifacts.length > 0) delivers.push('会在现有 ' + artifacts.length + ' 个文件上继续')
-      const decisions = []
-      if (reality.state !== 'authorized') decisions.push('本次只用工作区资料；个人现实尚未授权，所以我不猜你的生活')
-      else decisions.push('会读你的个人现实，范围仅限你本人有权访问的对话与现实')
-      decisions.push('高影响动作（发出去、删东西、花钱、替别人做承诺）我会停下来问你')
-      return { uses, delivers, decisions }
-    }
-
-    // ————————————————————————— 授权 —————————————————————————
+    // ————————————————————————— Family Space 授权（用户动作） —————————————————————————
 
     async function connectReality() {
-      store.set({ busy: true })
       try {
-        const started = await api('/reality/connect', { method: 'POST', body: { locale: 'zh-CN' } })
-        store.set({ pendingDevice: started, busy: false })
-        if (started.verificationUriComplete) {
-          try { window.open(started.verificationUriComplete, '_blank', 'noopener,noreferrer') } catch { /* 浏览器拦了就让用户点链接 */ }
-        }
+        const started = await api('/reality/connect', { method: 'POST' })
+        store.set({ device: { userCode: started.userCode, verificationUri: started.verificationUri ?? started.verificationUriComplete ?? null, startedAt: Date.now() } })
         startDevicePolling()
       } catch (error) {
-        store.set({ busy: false })
-        toast('开启授权失败：' + error.message)
+        toast('发起授权失败：' + error.message)
       }
     }
 
     function startDevicePolling() {
       stopDevicePolling()
-      const timer = setInterval(async () => {
-        const state = store.get()
-        if (!state.pendingDevice || state.devicePolling) return
-        store.set({ devicePolling: true })
+      deviceTimer = setInterval(async () => {
         try {
           const result = await api('/reality/poll', { method: 'POST' })
-          if (result.state === 'pending') {
-            if (result.interval) store.set({ pendingDevice: { ...store.get().pendingDevice, interval: result.interval } })
-          } else if (result.state === 'linked') {
+          if (result.state === 'linked') {
             stopDevicePolling()
-            store.set({ pendingDevice: null, devicePolling: false })
-            toast('个人现实已连接。')
+            store.set({ device: null })
+            toast('家庭空间已连接。')
             await loadState({ silent: true })
-            return
-          } else {
+          } else if (result.state === 'expired' || result.state === 'denied') {
             stopDevicePolling()
-            store.set({ pendingDevice: null })
-            toast(result.detail ?? '授权没有完成。')
-            await loadState({ silent: true })
-            return
+            store.set({ device: null })
+            toast(result.state === 'expired' ? '授权码过期了，请重新连接。' : '授权被拒绝了。')
           }
-        } catch (error) {
-          toast('授权轮询失败：' + error.message)
-        } finally {
-          store.set({ devicePolling: false })
-        }
+        } catch { /* 轮询失败继续等下一次 */ }
       }, 5000)
-      store.set({ pollTimer: timer })
     }
 
     function stopDevicePolling() {
-      const timer = store.get().pollTimer
-      if (timer) clearInterval(timer)
-      store.set({ pollTimer: null })
+      if (deviceTimer) { clearInterval(deviceTimer); deviceTimer = null }
     }
 
     async function revokeReality() {
-      if (!window.confirm('撤销后生络立刻停止读取你的个人现实。确定吗？')) return
       try {
-        const result = await api('/reality/revoke', { method: 'POST' })
-        const detail = result?.server?.ok ? '已经在家庭空间撤销，并删掉了本机凭据。' : '本机凭据已删除。家庭空间那边可能仍需你确认撤销。'
-        toast(detail)
+        await api('/reality/revoke', { method: 'POST' })
+        toast('已撤销。旧令牌已失效。')
         await loadState({ silent: true })
       } catch (error) {
         toast('撤销失败：' + error.message)
       }
     }
 
-    /**
-     * 授权之后的下一个动作：按当前这件事问一次个人现实。
-     * 不自动查（不在启动时全量同步），本人点一下才查；查到的结果进网络。
-     */
-    async function queryRealityFromPanel() {
-      const state = store.get()
-      const task = (state.goal || '').trim() || (state.data?.network?.focus ?? '') || '了解我现在的处境'
-      if (state.realityBusy) return
-      store.set({ realityBusy: true })
-      try {
-        const result = await api('/reality/query', { method: 'POST', body: { task, limit: 10 } })
-        if (!result?.ok) {
-          store.set({ realityBusy: false })
-          toast('这次没读到：' + (result?.detail ?? '未知原因'))
-          return
-        }
-        const facts = result.results?.length ?? 0
-        const conversations = result.conversations?.length ?? 0
-        const summary = facts === 0
-          ? (result.unknowns?.[0]?.message || '这次范围内没有匹配到相关现实——是没有匹配，不是不存在。')
-          : '读到 ' + facts + ' 条个人现实' + (conversations > 0 ? '、' + conversations + ' 段可回溯的对话' : '') + '，已经放到网络上。'
-        store.set({ realityBusy: false, lastQuery: summary })
-        toast(summary)
-        await loadState({ silent: true })
-      } catch (error) {
-        store.set({ realityBusy: false })
-        toast('读取失败：' + error.message)
-      }
-    }
-
-    /** 看某条现实背后的对话原文（逐字，不改写）。 */
     async function openConversation(conversationId) {
-      if (!conversationId) return
       try {
         const result = await api('/reality/conversation', { method: 'POST', body: { conversationId } })
-        if (!result?.ok) { toast(result?.detail ?? '这段对话打不开。'); return }
-        store.set({ conversation: result.conversation })
+        store.set({ conversation: result.ok ? result.conversation : null })
+        if (!result.ok) toast(result.detail ?? '这段对话读不到。')
       } catch (error) {
-        toast('打开对话失败：' + error.message)
+        toast('读对话失败：' + error.message)
       }
     }
 
-    // ————————————————————————— 组件 —————————————————————————
+    async function confirmCandidate(runId, candidateId) {
+      const target = store.get().candidateTarget.trim()
+      if (!target) { toast('先写一个要放到项目里的相对路径。'); return }
+      try {
+        await api('/candidates/confirm', { method: 'POST', body: { runId, candidateId, targetPath: target } })
+        store.set({ candidateTarget: '' })
+        toast('已按你的确认写入：' + target)
+        await loadState({ silent: true })
+      } catch (error) {
+        toast('没写入：' + error.message)
+      }
+    }
+
+    async function searchKnowledgeNow() {
+      const query = store.get().knowledge.query.trim()
+      if (!query) return
+      store.set((state) => ({ knowledge: { ...state.knowledge, busy: true } }))
+      try {
+        const result = await api('/knowledge/search', { method: 'POST', body: { query } })
+        store.set((state) => ({ knowledge: { ...state.knowledge, result, busy: false } }))
+      } catch (error) {
+        store.set((state) => ({ knowledge: { ...state.knowledge, result: { ok: false, detail: error.message }, busy: false } }))
+      }
+    }
+
+    // ————————————————————————— 小组件 —————————————————————————
 
     function PanelIcon({ size }) {
-      const dimension = size || 16
+      const s = size ?? 16
       return h('svg', {
-        width: dimension, height: dimension, viewBox: '0 0 16 16', 'aria-hidden': 'true', focusable: 'false',
+        width: s, height: s, viewBox: '0 0 16 16', 'aria-hidden': 'true', focusable: 'false',
       }, [
         h('circle', { key: 'r', cx: 8, cy: 8, r: 6.2, fill: 'none', stroke: 'currentColor', strokeWidth: 1.2, strokeDasharray: '2 2.6', opacity: 0.85 }),
         h('circle', { key: 'c', cx: 8, cy: 8, r: 3.4, fill: 'currentColor', opacity: 0.9 }),
       ])
     }
 
-    function NodeDot({ node, active, onSelect }) {
-      const tone = (KIND[node.kind] ?? KIND.project).tone
-      const classes = ['sl-node', 'tone-' + tone, active ? 'is-active' : ''].join(' ').trim()
-      // 「我的现实」的来源比它的类型更有信息量，所以这类节点显示来源而不是重复类型名。
-      const kindLabel = node.kind === 'reality'
-        ? (node.unsupported ? '未连接 · 未知' : '家庭空间')
-        : (KIND[node.kind] ?? KIND.project).label
-      return h('button', {
-        type: 'button',
-        className: classes,
-        onClick: () => onSelect(node),
-        title: node.subtitle ? node.title + '｜' + node.subtitle : node.title,
-      }, [
-        h('span', { key: 'd', className: 'sl-node-dot', 'aria-hidden': 'true' }),
-        h('span', { key: 'l', className: 'sl-node-label' }, node.title),
-        h('span', { key: 'k', className: 'sl-node-kind' }, kindLabel),
-      ])
+    function phaseOf(data) {
+      const run = data?.activeRun
+      if (!run) {
+        return { id: 'idle', title: '空闲', line: '我已准备好。说一句你现在想解决的事，或继续以前的事情。' }
+      }
+      const key = run.phase === 'completed' && run.status === 'answered' ? 'completed' : (run.phase ?? 'preparing')
+      const mapped = PHASE_TEXT[key] ?? ['进行中', '正在按真实事件推进。']
+      return { id: key, title: mapped[0], line: mapped[1] }
     }
 
-    function NetworkMap({ data, selected, onSelect }) {
-      const nodes = data?.network?.nodes ?? []
+    function toneOf(node) {
+      return (KIND[node?.kind] ?? { tone: 'slate' }).tone
+    }
+
+    // ————————————————————————— 网络 —————————————————————————
+
+    function layoutNodes(nodes) {
+      const groups = new Map()
+      for (const node of nodes) {
+        const slot = (KIND[node.kind] ?? { slot: 0 }).slot
+        if (!groups.has(slot)) groups.set(slot, [])
+        groups.get(slot).push(node)
+      }
+      const placed = []
+      for (const [slot, list] of groups) {
+        const inSlot = Math.min(list.length, 4)
+        for (let i = 0; i < inSlot; i += 1) {
+          const spread = 34
+          const angle = slot + (inSlot === 1 ? 0 : (i - (inSlot - 1) / 2) * (spread / Math.max(1, inSlot - 1)))
+          const rad = (angle * Math.PI) / 180
+          const ring = list[i].kind === 'step' || list[i].kind === 'candidate' || list[i].kind === 'registry' ? 0.44 : 0.32
+          placed.push({
+            node: list[i],
+            x: 50 + Math.cos(rad) * ring * 100,
+            y: 50 + Math.sin(rad) * ring * 100,
+          })
+        }
+      }
+      return placed
+    }
+
+    function NetworkMap({ data, selectedId, onSelect, pulses, reducedMotion }) {
+      const nodes = (data?.network?.nodes ?? []).slice(0, 9)
       const edges = data?.network?.edges ?? []
-      const focus = data?.network?.focus
-      const status = data?.network?.focusStatus
-      const radius = nodes.length > 6 ? 196 : 172
-      const box = radius * 2 + 96
-      const center = box / 2
-      const positions = new Map()
-      nodes.forEach((node, index) => {
-        const angle = (-Math.PI / 2) + (index * 2 * Math.PI) / Math.max(nodes.length, 1)
-        positions.set(node.id, {
-          x: center + Math.cos(angle) * radius,
-          y: center + Math.sin(angle) * radius,
-        })
-      })
+      const placed = layoutNodes(nodes)
+      const byId = new Map(placed.map((item) => [item.node.id, item]))
+      const pulseStepIds = new Set((pulses ?? []).map((pulse) => pulse.step?.callId ? 'step:' + pulse.step.callId : null).filter(Boolean))
+      const activePulse = (pulses ?? []).length > 0
 
       const lines = []
-      lines.push(h('circle', { key: 'orbit', className: 'sl-orbit', cx: center, cy: center, r: radius, fill: 'none' }))
+      lines.push(h('circle', { key: 'orbit', className: 'sl-orbit', cx: 50, cy: 50, r: 32, fill: 'none' }))
+      for (const item of placed) {
+        lines.push(h('line', {
+          key: 'core-' + item.node.id,
+          className: 'sl-core-line',
+          x1: 50, y1: 50, x2: item.x, y2: item.y,
+        }))
+      }
       for (const edge of edges) {
-        const from = positions.get(edge.from)
-        const to = positions.get(edge.to)
+        const from = byId.get(edge.from)
+        const to = byId.get(edge.to)
         if (!from || !to) continue
         lines.push(h('line', {
-          key: edge.id, className: 'sl-link',
+          key: 'e-' + edge.id,
+          className: 'sl-edge' + (edge.relation === 'reality_unknown' ? ' sl-edge-dashed' : ''),
           x1: from.x, y1: from.y, x2: to.x, y2: to.y,
         }))
       }
-      for (const node of nodes) {
-        const position = positions.get(node.id)
-        if (!position) continue
-        lines.push(h('line', {
-          key: 'spoke-' + node.id, className: 'sl-spoke',
-          x1: center, y1: center, x2: position.x, y2: position.y,
-        }))
-      }
 
-      return h('div', { className: 'sl-map', style: { width: box, height: box } }, [
-        h('svg', { key: 'svg', className: 'sl-map-svg', viewBox: '0 0 ' + box + ' ' + box, 'aria-hidden': 'true' }, lines),
-        h('div', { key: 'core', className: 'sl-core' }, [
-          h('div', { key: 'o', className: 'sl-orb', 'aria-hidden': 'true' }, [
-            h('span', { key: 'h', className: 'sl-orb-halo' }),
-            h('span', { key: 'c', className: 'sl-orb-core' }),
-            h('span', { key: 'm', className: 'sl-orb-mark' }, '∞'),
-          ]),
-          h('div', { key: 't', className: 'sl-core-text' }, [
-            h('strong', { key: 'n' }, '生络'),
-            h('span', { key: 's' }, status === 'running' ? '正在理解 · 调用 · 执行 · 核对' : focus ? '当前这件事在这里' : '在等你说一句话'),
-          ]),
+      return h('div', { className: 'sl-map' }, [
+        h('svg', { key: 'svg', className: 'sl-map-svg', viewBox: '0 0 100 100', preserveAspectRatio: 'none', 'aria-hidden': 'true' }, lines),
+        h('div', {
+          key: 'core',
+          className: 'sl-core' + (activePulse && !reducedMotion ? ' sl-core-live' : '') +
+            (pulses?.some((pulse) => pulse.kind === 'failed') ? ' sl-core-fail' : ''),
+        }, [
+          h(PanelIcon, { key: 'i', size: 22 }),
+          h('span', { key: 't', className: 'sl-core-title' }, '生络'),
         ]),
-        ...nodes.map((node) => {
-          const position = positions.get(node.id)
-          if (!position) return null
-          return h('div', {
-            key: 'pos-' + node.id,
-            className: 'sl-node-holder',
-            style: { left: position.x + 'px', top: position.y + 'px' },
-          }, h(NodeDot, { node, active: selected?.id === node.id, onSelect }))
+        ...placed.map((item) => {
+          const selected = selectedId === item.node.id
+          const live = pulseStepIds.has(item.node.id)
+          return h('button', {
+            key: item.node.id,
+            type: 'button',
+            className: 'sl-node tone-' + toneOf(item.node)
+              + (selected ? ' sl-node-selected' : '')
+              + (live ? ' sl-node-live' : '')
+              + (item.node.status === 'failed' ? ' sl-node-failed' : ''),
+            style: { left: item.x + '%', top: item.y + '%' },
+            title: item.node.subtitle ?? item.node.title,
+            onClick: () => onSelect(item.node),
+            onFocus: () => onSelect(item.node),
+          }, [
+            h('span', { key: 'd', className: 'sl-node-dot', 'aria-hidden': 'true' }),
+            h('span', { key: 'l', className: 'sl-node-label' }, item.node.title),
+            h('span', { key: 'k', className: 'sl-node-kind' }, (KIND[item.node.kind] ?? { label: item.node.kind }).label),
+          ])
         }),
       ])
     }
 
-    function Relations({ data, onSelect }) {
-      const edges = data?.network?.edges ?? []
-      if (edges.length === 0) return null
-      return h('ul', { className: 'sl-relations' }, edges.slice(0, 6).map((edge) => h('li', { key: edge.id }, [
-        h('button', { key: 'b', type: 'button', className: 'sl-relation', onClick: () => onSelect(null), title: edge.why ?? '' }, edge.label),
-      ])))
+    // ————————————————————————— 右面板三页签 —————————————————————————
+
+    function rightTabs() {
+      const ui = useStore()
+      const tabs = [
+        { id: 'work', label: '当前工作' },
+        { id: 'understand', label: '理解与依据' },
+        { id: 'trace', label: '轨迹' },
+        { id: 'connect', label: '连接' },
+      ]
+      return h('div', { className: 'sl-tabs', role: 'tablist' }, tabs.map((tab) => h('button', {
+        key: tab.id,
+        type: 'button',
+        role: 'tab',
+        'aria-selected': ui.rightTab === tab.id,
+        className: 'sl-tab' + (ui.rightTab === tab.id ? ' sl-tab-active' : ''),
+        onClick: () => store.set({ rightTab: tab.id }),
+      }, tab.label)))
     }
 
-    function RealityBlock({ data }) {
-      const reality = data?.reality
-      const state = store.get()
-      if (!reality) return null
-      if (state.pendingDevice) {
-        const labels = state.pendingDevice.requestedScopeLabels ?? []
-        return h('div', { className: 'sl-card' }, [
-          h('div', { key: 't', className: 'sl-card-title' }, '在家庭空间里确认'),
-          h('div', { key: 'u', className: 'sl-code' }, state.pendingDevice.userCode),
-          h('p', { key: 'd', className: 'sl-muted' }, '浏览器已经打开授权页。用你自己的 Family Space 账号登录，看清楚它要的范围再同意：'),
-          labels.length > 0
-            ? h('ul', { key: 'l', className: 'sl-scopes' }, labels.map((label) => h('li', { key: label.id }, label.label)))
+    function WorkTab({ data }) {
+      const ui = useStore()
+      const run = data?.activeRun
+      const understanding = data?.network?.understanding
+      const decisions = (data?.network?.decisions ?? []).filter((decision) => !decision.resolved)
+      const candidates = (run?.candidates ?? []).filter((candidate) => candidate.status === 'draft' || candidate.status === 'blocked')
+      const verifications = run?.verifications ?? []
+      const phase = phaseOf(data)
+
+      const blocks = []
+      blocks.push(h('section', { key: 'focus', className: 'sl-block' }, [
+        h('h3', { key: 'h', className: 'sl-h3' }, '这件事'),
+        h('p', { key: 'g', className: 'sl-focus' }, run?.goal ?? (phase.id === 'idle' ? '还没有开始一件事' : '—')),
+        h('p', { key: 'p', className: 'sl-muted' }, phase.title + ' · ' + phase.line),
+      ]))
+
+      blocks.push(h('section', { key: 'u', className: 'sl-block' }, [
+        h('h3', { key: 'h', className: 'sl-h3' }, '我目前的理解'),
+        understanding?.headline
+          ? h('p', { key: 'm', className: 'sl-strong' }, understanding.headline)
+          : h('p', { key: 'm', className: 'sl-muted' }, data?.understandingMeta?.invalid
+              ? '这次的结构化理解没有解析成功：' + data.understandingMeta.invalid
+              : '这件事还没有形成结构化理解。没有就不写，我不拿模板顶上。'),
+        understanding?.next ? h('p', { key: 'n', className: 'sl-muted' }, '下一步：' + understanding.next) : null,
+        understanding?.at ? h('p', { key: 'at', className: 'sl-muted' }, '来自 ' + String(understanding.at).slice(0, 16).replace('T', ' ')) : null,
+      ]))
+
+      // 真实最终答复（来自原生会话最后一条 assistant 消息；只存在内存里，不落盘）
+      if (data?.network?.finalReply) {
+        blocks.push(h('section', { key: 'reply', className: 'sl-block' }, [
+          h('h3', { key: 'h', className: 'sl-h3' }, '生络的答复'),
+          h('p', { key: 'p', className: 'sl-reply' }, data.network.finalReply),
+          data.network.finalReplyAt
+            ? h('p', { key: 'at', className: 'sl-muted' }, '来自这次原生会话 · ' + String(data.network.finalReplyAt).slice(0, 16).replace('T', ' '))
             : null,
-          h('p', { key: 'n', className: 'sl-hint' }, '连接码 ' + Math.max(1, Math.round((state.pendingDevice.expiresIn ?? 600) / 60)) + ' 分钟内有效。不是你刚发起的那一次，请不要同意。'),
-          h('a', {
-            key: 'a', className: 'sl-link-btn',
-            href: state.pendingDevice.verificationUriComplete, target: '_blank', rel: 'noreferrer noopener',
-          }, '重新打开授权页'),
-        ])
+        ]))
       }
-      if (reality.state === 'authorized') {
-        const subject = reality.subject?.displayName ?? reality.subject?.principalId
-        return h('div', { className: 'sl-card' }, [
-          h('div', { key: 't', className: 'sl-row' }, [
-            h('span', { key: 'l', className: 'sl-ok' }, '个人现实：已授权'),
-            h('button', { key: 'b', type: 'button', className: 'sl-quiet sl-small', onClick: revokeReality }, '撤回'),
-          ]),
-          h('p', { key: 'd', className: 'sl-muted' }, [
-            subject ? '当前账号：' + subject + '。' : '当前账号已授权。',
-            '只读，只限你本人有权访问的部分；不会在启动时全量同步。撤回入口也在家庭空间「我的 → 隐私和数据」。',
-          ].join('')),
-          h('button', {
-            key: 'q', type: 'button', className: 'sl-primary sl-small',
-            onClick: queryRealityFromPanel, disabled: state.realityBusy,
-          }, state.realityBusy ? '正在查…' : '查一下这件事的现实'),
-          state.lastQuery ? h('p', { key: 'r', className: 'sl-hint' }, state.lastQuery) : null,
-        ])
+
+      if (verifications.length > 0) {
+        blocks.push(h('section', { key: 'v', className: 'sl-block' }, [
+          h('h3', { key: 'h', className: 'sl-h3' }, '验收结果'),
+          h('ul', { key: 'ul', className: 'sl-bullets' }, verifications.map((item) => h('li', { key: item.path }, [
+            h('span', { key: 'p' }, item.path + ' · ' + (item.ok ? '通过' : '没通过：' + item.reason)),
+          ]))),
+        ]))
       }
-      const expired = reality.state === 'expired'
-      return h('div', { className: 'sl-card' }, [
-        h('div', { key: 't', className: 'sl-card-title' }, expired ? '个人现实：授权已过期' : '个人现实：尚未授权'),
-        h('p', { key: 'd', className: 'sl-muted' }, expired
-          ? '旧的凭据已经不能用。重连一次，我才能继续读你有权访问的部分。'
-          : '现在关于你的生活、家庭对话，我只有「未知」。我不会用测试数据或猜测填这个空白。'),
-        h('button', { key: 'c', type: 'button', className: 'sl-primary', onClick: connectReality, disabled: state.busy }, '连接家庭空间'),
-      ])
+
+      if (run?.endNote) {
+        blocks.push(h('section', { key: 'note', className: 'sl-block' }, [
+          h('h3', { key: 'h', className: 'sl-h3' }, '结束说明'),
+          h('p', { key: 'p', className: 'sl-muted' }, run.endNote),
+        ]))
+      }
+
+      blocks.push(h('section', { key: 'd', className: 'sl-block' }, [
+        h('h3', { key: 'h', className: 'sl-h3' }, '待你决定'),
+        decisions.length === 0
+          ? h('p', { key: 'n', className: 'sl-muted' }, '现在没有要你拍板的事。')
+          : h('ul', { key: 'ul', className: 'sl-decisions' }, decisions.slice(0, 4).map((decision) => h('li', { key: decision.id }, [
+              h('strong', { key: 't' }, decision.title),
+              decision.detail ? h('span', { key: 'd', className: 'sl-muted' }, decision.detail) : null,
+              decision.sessionId ? h('button', { key: 'o', type: 'button', className: 'sl-quiet sl-small', onClick: () => openNativeSession(decision.sessionId) }, '去原生会话决定') : null,
+            ]))),
+      ]))
+
+      if (candidates.length > 0) {
+        blocks.push(h('section', { key: 'c', className: 'sl-block' }, [
+          h('h3', { key: 'h', className: 'sl-h3' }, '可以沉淀的'),
+          ...candidates.slice(0, 2).map((candidate) => h('div', { key: candidate.id, className: 'sl-card' }, [
+            h('span', { key: 't', className: 'sl-card-title' }, candidate.content || '候选正文只在原生会话里（没有复制到产品状态）。'),
+            h('p', { key: 'n', className: 'sl-muted' }, '用途：' + (candidate.use === 'knowledge-to-mki' ? '回 MKI 知识' : candidate.use === 'project-experience' ? '回项目经验' : '本人确认的洞见') + ' · 目标：' + (candidate.target?.label ?? '你确认后指定')),
+            h('p', { key: 'n2', className: 'sl-muted' }, candidate.content
+              ? (candidate.target?.kind === 'mki' ? 'MKI 还没有连接，这条只能保持草稿，不会写入。' : '现在只是草稿，还没有写进任何地方。确认后才会写入你指定的项目文件。')
+              : '重启后正文没有复制过来；回到原生会话查看，或重新生成候选。'),
+            candidate.status === 'draft' && candidate.content && !candidate.target ? h('input', {
+              key: 'i', className: 'sl-input', placeholder: '项目内相对路径，例如 notes/这次的经验.md',
+              value: ui.candidateTarget, onChange: (event) => store.set({ candidateTarget: event.target.value }),
+            }) : null,
+            candidate.status === 'draft' && candidate.content && !candidate.target ? h('button', { key: 'b', type: 'button', className: 'sl-primary', onClick: () => confirmCandidate(run.runId, candidate.id) }, '确认写入这个文件') : null,
+          ])),
+        ]))
+      }
+
+      if (!run) {
+        blocks.push(h('section', { key: 'empty', className: 'sl-block' }, [
+          h('p', { key: 'p', className: 'sl-muted' }, '说一句话，我就会在原生会话里开始做；需要动手前会先让你确认。'),
+        ]))
+      }
+
+      return h('div', { className: 'sl-right-inner' }, blocks)
     }
 
-    function RightPanel({ data, approval, onSelect }) {
-      const network = data?.network ?? {}
-      const selected = store.get().goal
-      const understanding = network.understanding
-      const activeRun = data?.activeRun
-      const facts = (network.nodes ?? []).filter((node) => node.kind === 'reality')
-      const workspaces = network.workspaces ?? []
-      const knowledge = network.knowledge ?? []
-      const nextStepNode = (network.nodes ?? []).find((node) => node.kind === 'task')
-      const decisions = network.decisions ?? []
+    async function saveCorrection(runId) {
+      const value = store.get().correctionText.trim()
+      if (!value) return
+      try {
+        await api('/understanding/correct', { method: 'POST', body: { runId, text: value } })
+        store.set({ correctionText: '' })
+        toast('已记住你的纠正。')
+        await loadState({ silent: true })
+      } catch (error) {
+        toast('纠正没保存：' + error.message)
+      }
+    }
 
+    function UnderstandTab({ data }) {
+      const understanding = data?.network?.understanding
+      const source = data?.understandingMeta?.source
+      const corrections = data?.corrections ?? []
+      const runId = data?.activeRun?.runId ?? null
+      const groups = [
+        { key: 'known', label: '我知道的（有依据）', items: understanding?.known ?? [] },
+        { key: 'inference', label: '我的判断（推断，不是事实）', items: understanding?.inference ?? [] },
+        { key: 'unknown', label: '我还不知道的', items: understanding?.unknown ?? [] },
+      ]
       return h('div', { className: 'sl-right-inner' }, [
-        h('section', { key: 'a', className: 'sl-block' }, [
-          h('h3', { key: 'h', className: 'sl-h3' }, '当前正在处理的事情'),
-          network.focus
-            ? h('div', { key: 'f' }, [
-                h('p', { key: 'g', className: 'sl-focus' }, network.focus),
-                h('p', { key: 's', className: 'sl-muted' }, [
-                  STATUS_LABEL[activeRun?.status ?? network.focusStatus] ?? '已记录',
-                  activeRun?.toolCalls ? ' · 已经真实调用工具 ' + activeRun.toolCalls + ' 次' : '',
-                ].join('')),
-                activeRun?.status === 'failed' && activeRun?.endNote
-                  ? h('p', { key: 'e', className: 'sl-error-note' }, '为什么停下：' + activeRun.endNote)
-                  : null,
-              ])
-            : h('p', { key: 'e', className: 'sl-muted' }, '还没有开始的事。在下面说一句你想推进什么。'),
-          approval ? h('div', { key: 'ap', className: 'sl-approval' }, [
-            h('p', { key: 'p' }, '有一个审批在等你。这一步要你点了才会往下走。'),
-            h('button', {
-              key: 'b', type: 'button', className: 'sl-primary',
-              onClick: () => openNativeSession(activeRun?.sessionId ?? store.get().sessionId),
-            }, '到原生会话里允许或拒绝'),
-          ]) : null,
-          activeRun?.sessionId ? h('button', {
-            key: 'o', type: 'button', className: 'sl-quiet sl-small',
-            onClick: () => openNativeSession(activeRun.sessionId),
-          }, '打开原生会话') : null,
+        h('section', { key: 'head', className: 'sl-block' }, [
+          h('h3', { key: 'h', className: 'sl-h3' }, '理解'),
+          h('p', { key: 'p', className: 'sl-strong' }, understanding?.headline ?? '还没有形成结构化理解。'),
+          source?.at ? h('p', { key: 's', className: 'sl-muted' }, '来自模型在这次会话里的输出 · ' + String(source.at).slice(0, 16).replace('T', ' ')) : null,
         ]),
-
-        h('section', { key: 'b', className: 'sl-block' }, [
-          h('h3', { key: 'h', className: 'sl-h3' }, '生络目前的理解'),
-          understanding
-            ? h('div', { key: 'u' }, [
-                h('p', { key: 'hl', className: 'sl-strong' }, understanding.headline),
-                h('ul', { key: 'ul', className: 'sl-bullets' }, (understanding.points ?? []).map((point, index) => h('li', { key: index }, point))),
-              ])
-            : h('p', { key: 'n', className: 'sl-muted' }, '还没有足够真实信息，我不编一个理解。'),
-        ]),
-
-        h('section', { key: 'c', className: 'sl-block' }, [
-          h('h3', { key: 'h', className: 'sl-h3' }, '用了哪些现实和资料'),
-          h('ul', { key: 'ul', className: 'sl-sources' }, [
-            h('li', { key: 'reality' }, data?.reality?.state === 'authorized'
-              ? '个人现实：已授权' + (facts.length > 0 ? '（本次 ' + facts.length + ' 条）' : '（本次还没查）')
-              : '个人现实：尚未授权 —— 未知'),
-            ...workspaces.slice(0, 3).map((workspace) => h('li', { key: 'w-' + workspace.id }, '项目：' + workspace.title + (workspace.active ? '（当前）' : ''))),
-            ...knowledge.slice(0, 2).map((item) => h('li', { key: 'k-' + item.id }, '知识：' + item.title)),
-            h('li', { key: 'exec' }, '执行：DSH 原生会话（真实工具调用与审批）'),
-          ]),
-          h(RealityBlock, { key: 'reality', data }),
-        ]),
-
-        h('section', { key: 'd', className: 'sl-block' }, [
-          h('h3', { key: 'h', className: 'sl-h3' }, '下一步'),
-          h('p', { key: 'p', className: 'sl-muted' }, nextStepNode
-            ? '继续「' + nextStepNode.title + '」，在原生会话里推进；需要你定的地方我会停下来。'
-            : '说一句你想推进什么，我会先给出「我会用到 / 我会交付 / 需要你定」，你点头再动手。'),
-        ]),
-
-        h('section', { key: 'e', className: 'sl-block' }, [
-          h('h3', { key: 'h', className: 'sl-h3' }, '待你决定'),
-          decisions.filter((decision) => !decision.resolved).length === 0 && !approval
-            ? h('p', { key: 'n', className: 'sl-muted' }, '现在没有要你拍板的事。')
-            : h('ul', { key: 'ul', className: 'sl-decisions' }, decisions.filter((decision) => !decision.resolved).slice(0, 4).map((decision) => h('li', { key: decision.id }, [
-                h('strong', { key: 't' }, decision.title),
-                decision.detail ? h('span', { key: 'd', className: 'sl-muted' }, decision.detail) : null,
+        ...groups.map((group) => h('section', { key: group.key, className: 'sl-block' }, [
+          h('h3', { key: 'h', className: 'sl-h3' }, group.label),
+          group.items.length === 0
+            ? h('p', { key: 'e', className: 'sl-muted' }, group.key === 'unknown' ? '没有明确写出的未知——这本身也可能是个缺口。' : '这一栏是空的。')
+            : h('ul', { key: 'ul', className: 'sl-bullets' }, group.items.map((item, index) => h('li', { key: index }, item))),
+        ])),
+        data?.understandingMeta?.realityNote
+          ? h('section', { key: 'note', className: 'sl-block' }, [
+              h('h3', { key: 'h', className: 'sl-h3' }, '现实来源状态'),
+              h('p', { key: 'p', className: 'sl-muted' }, data.understandingMeta.realityNote.headline),
+            ])
+          : null,
+        h('section', { key: 'corrections', className: 'sl-block' }, [
+          h('h3', { key: 'h', className: 'sl-h3' }, '我记住的纠正'),
+          corrections.length === 0
+            ? h('p', { key: 'e', className: 'sl-muted' }, '还没有纠正过。你说「你理解错了」时，我会把纠正记在这里，后续任务优先使用。')
+            : h('ul', { key: 'ul', className: 'sl-bullets' }, corrections.slice(-4).map((item) => h('li', { key: item.id }, [
+                String(item.at ?? '').slice(0, 16).replace('T', ' ') + ' · ' + item.text,
               ]))),
+          runId
+            ? h('div', { key: 'form', className: 'sl-row' }, [
+                h('input', {
+                  key: 'i', className: 'sl-input', placeholder: '哪里理解错了？用一句话纠正',
+                  value: ui.correctionText,
+                  onChange: (event) => store.set({ correctionText: event.target.value }),
+                }),
+                h('button', { key: 'b', type: 'button', className: 'sl-primary', onClick: () => saveCorrection(runId) }, '记住纠正'),
+              ])
+            : null,
+          h('p', { key: 'n', className: 'sl-muted sl-small' }, '只改我的理解，不改 Family Space 的原始事实。'),
         ]),
       ])
     }
 
-    function TodayView({ data, approval }) {
-      const [selected, setSelected] = React.useState(null)
+    function TraceTab({ data }) {
+      const run = data?.activeRun
+      const steps = run?.steps ?? []
+      return h('div', { className: 'sl-right-inner' }, [
+        h('section', { key: 'head', className: 'sl-block' }, [
+          h('h3', { key: 'h', className: 'sl-h3' }, '轨迹'),
+          h('p', { key: 'p', className: 'sl-muted' }, steps.length === 0
+            ? '这件事还没有真实的工具调用。'
+            : '共 ' + steps.length + ' 步；成功 ' + steps.filter((step) => step.status === 'ok').length + '，失败 ' + steps.filter((step) => step.status === 'failed').length + '。'),
+        ]),
+        run?.workspaceChanges
+          ? h('section', { key: 'chg', className: 'sl-block' }, [
+              h('h3', { key: 'h', className: 'sl-h3' }, '项目改动'),
+              h('p', { key: 'g', className: 'sl-muted' }, (run.workspaceChanges.git?.anyChange ? 'git 检测到改动' : 'git 没有检测到改动') + ' · 测试 ' + (run.workspaceChanges.tests?.length ?? 0) + ' 条' + ((run.workspaceChanges.tests ?? []).some((test) => !test.ok) ? '（有失败）' : '')),
+              (run.workspaceChanges.git?.changedFiles ?? []).length
+                ? h('ul', { key: 'ul', className: 'sl-bullets' }, run.workspaceChanges.git.changedFiles.slice(0, 8).map((file, index) => h('li', { key: index }, file)))
+                : null,
+            ])
+          : null,
+        h('section', { key: 'list', className: 'sl-block' }, steps.length === 0 ? null : h('ul', { className: 'sl-steps' }, steps.slice().reverse().map((step) => h('li', { key: step.callId, className: 'sl-step sl-step-' + step.status }, [
+          h('span', { key: 't', className: 'sl-step-time' }, step.startedAt ? String(step.startedAt).slice(11, 19) : '—'),
+          h('span', { key: 'v', className: 'sl-step-verb' }, step.verb),
+          h('span', { key: 'g', className: 'sl-step-target' }, step.target),
+          h('span', { key: 's', className: 'sl-step-status' }, step.status === 'running' ? '进行中' : step.status === 'ok' ? '成功' : '失败'),
+          step.error ? h('span', { key: 'e', className: 'sl-error-note' }, step.error) : null,
+          step.resultSummary ? h('span', { key: 'r', className: 'sl-muted' }, step.resultSummary) : null,
+        ])))),
+        (run?.artifacts ?? []).length > 0
+          ? h('section', { key: 'a', className: 'sl-block' }, [
+              h('h3', { key: 'h', className: 'sl-h3' }, '这次留下的文件'),
+              h('ul', { key: 'ul', className: 'sl-bullets' }, run.artifacts.map((artifact) => h('li', { key: artifact.path }, [
+                h('a', { key: 'l', className: 'sl-link-btn', href: API + '/artifact?path=' + encodeURIComponent(artifact.path), target: '_blank', rel: 'noreferrer noopener' }, artifact.path),
+                artifact.sha256 ? h('span', { key: 's', className: 'sl-muted' }, ' · ' + artifact.sha256.slice(0, 12)) : null,
+              ]))),
+            ])
+          : null,
+      ])
+    }
+
+    function NodeDetail({ node, onClose = null }) {
+      if (!node) return null
+      return h('div', { className: 'sl-node-detail' }, [
+        h('div', { key: 'h', className: 'sl-row' }, [
+          h('strong', { key: 't' }, node.title),
+          h('button', { key: 'x', type: 'button', className: 'sl-quiet sl-small', onClick: onClose ?? (() => store.set({ selectedId: null })) }, '收起'),
+        ]),
+        h('p', { key: 'k', className: 'sl-muted' }, (KIND[node.kind] ?? { label: node.kind }).label + (node.subtitle ? ' · ' + node.subtitle : '')),
+        node.sourceRef ? h('p', { key: 'src', className: 'sl-muted' }, '来源：' + node.sourceRef.label + (node.time?.label ? ' · ' + node.time.label : '')) : null,
+        node.factStatus ? h('p', { key: 'fs', className: 'sl-muted' }, '性质：' + ({ owner_said: '你亲口说的', fact: '有依据的事实', inference: '推断（未确认）', unknown: '未知' }[node.factStatus] ?? node.factStatus)) : null,
+        node.lane ? h('p', { key: 'lane', className: 'sl-muted' }, '时间位置：' + ({ past: '来路', present: '当前路', future: '未来路' }[node.lane] ?? node.lane)) : null,
+        node.kind === 'understanding' && node.sourceCount ? h('p', { key: 'sc', className: 'sl-muted' }, '来源：' + node.sourceCount + ' 个指针（正文没有复制到产品状态）') : null,
+        node.openable?.kind === 'session' ? h('button', { key: 'o', type: 'button', className: 'sl-quiet sl-small', onClick: () => openNativeSession(node.openable.target) }, '打开原生会话') : null,
+        node.openable?.kind === 'conversation' ? h('button', { key: 'c', type: 'button', className: 'sl-quiet sl-small', onClick: () => openConversation(node.openable.target) }, '看原始对话证据') : null,
+        node.openable?.kind === 'artifact' ? h('a', { key: 'a', className: 'sl-link-btn', href: API + '/artifact?path=' + encodeURIComponent(node.openable.target), target: '_blank', rel: 'noreferrer noopener' }, '打开成果') : null,
+        node.openable?.kind === 'connect' ? h('button', { key: 'k', type: 'button', className: 'sl-primary', onClick: () => { store.set({ rightTab: 'connect' }); void connectReality() } }, '连接 Family Space') : null,
+      ])
+    }
+
+    // ————————————————————————— 底部输入 —————————————————————————
+
+    function Composer({ data }) {
+      const ui = useStore()
+      const run = data?.activeRun
+      const running = run?.status === 'running'
+      return h('div', { className: 'sl-composer' }, [
+        h('div', { key: 'row', className: 'sl-input-row' }, [
+          h('input', {
+            key: 'i',
+            className: 'sl-input',
+            placeholder: '告诉我你想解决什么，或者继续说一件正在做的事…',
+            value: ui.goal,
+            disabled: ui.busy,
+            onChange: (event) => store.set({ goal: event.target.value }),
+            onKeyDown: (event) => { if (event.key === 'Enter' && !event.nativeEvent?.isComposing) beginWork() },
+          }),
+          h('button', { key: 'b', type: 'button', className: 'sl-primary', disabled: ui.busy || !ui.goal.trim(), onClick: () => beginWork() }, ui.busy ? '正在交给原生会话…' : '开始'),
+        ]),
+        running ? h('div', { key: 'live', className: 'sl-row' }, [
+          h('span', { key: 's', className: 'sl-muted' }, '这件事在原生会话里跑；进度以真实事件为准。'),
+          h('button', { key: 'c', type: 'button', className: 'sl-quiet sl-small', onClick: () => stopWork() }, '停下'),
+        ]) : null,
+        h('p', { key: 'hint', className: 'sl-hint' }, '执行、审批、文件预览都在 DSH 原生界面；这里只显示真实发生的事。'),
+      ])
+    }
+
+    // ————————————————————————— 视图 —————————————————————————
+
+    const TODAY_KIND = { decision: '待你决定', run: '没做完的事', reality: '你的现实', project: '项目', knowledge: '知识' }
+
+    function onTodayAction(action) {
+      if (!action) return
+      if (action.kind === 'open-session') { openNativeSession(action.ref); return }
+      if (action.kind === 'open-conversation') { openConversation(action.ref); return }
+      if (action.kind === 'view') { store.set({ view: action.ref }); return }
+    }
+
+    function TodayPanel({ today, busy, onAction }) {
+      if (!today && !busy) return null
+      const items = today?.items ?? []
+      const body = (!today && busy)
+        ? h('p', { key: 'loading', className: 'sl-muted' }, '正在看有没有值得关注的事…')
+        : items.length === 0
+          ? h('p', { key: 'empty', className: 'sl-muted' }, today?.note || '目前没有值得打扰你的事。')
+          : h('div', { key: 'list', className: 'sl-today-list' }, items.map((item) => h('article', { key: item.id, className: 'sl-card sl-today-card' }, [
+              h('div', { key: 'top', className: 'sl-row' }, [
+                h('span', { key: 'k', className: 'sl-small sl-muted' }, TODAY_KIND[item.kind] ?? '值得关注'),
+                item.at ? h('span', { key: 't', className: 'sl-small sl-muted' }, String(item.at).slice(0, 16).replace('T', ' ')) : null,
+              ]),
+              h('strong', { key: 'title', className: 'sl-card-title' }, item.title),
+              h('p', { key: 'why', className: 'sl-muted' }, item.why),
+              item.evidence?.length
+                ? h('ul', { key: 'ev', className: 'sl-today-evidence' }, item.evidence.map((ev, index) => h('li', { key: index }, [
+                    ev.label || ev.type,
+                    ev.speaker ? ' · ' + ev.speaker : '',
+                    ev.at ? ' · ' + String(ev.at).slice(0, 10) : '',
+                    Array.isArray(ev.changed) && ev.changed.length ? ' · ' + ev.changed.length + ' 处改动' : '',
+                  ].filter(Boolean).join(''))))
+                : null,
+              item.unknown ? h('p', { key: 'unknown', className: 'sl-muted' }, '还不确定：' + item.unknown) : null,
+              item.next ? h('p', { key: 'next', className: 'sl-strong' }, '下一步：' + item.next) : null,
+              item.action
+                ? h('button', {
+                    key: 'action', type: 'button', className: 'sl-quiet sl-small',
+                    onClick: () => onAction(item.action),
+                  }, item.action.kind === 'open-session' ? '回原生会话' : item.action.kind === 'open-conversation' ? '查看对话' : '去知识页')
+                : null,
+            ])))
+      return h('section', { className: 'sl-today-panel' }, [
+        h('div', { key: 'head', className: 'sl-row' }, [
+          h('h3', { key: 'h', className: 'sl-h3' }, '值得关注'),
+          busy ? h('span', { key: 'b', className: 'sl-small sl-muted' }, '正在看…') : null,
+        ]),
+        body,
+        today?.errors?.length ? h('p', { key: 'err', className: 'sl-small sl-muted' }, '这次没读全：' + today.errors.join('；')) : null,
+      ])
+    }
+
+    function TodayView({ data }) {
       const ui = useStore()
       const nodes = data?.network?.nodes ?? []
-      const empty = nodes.length === 0
+      const selected = nodes.find((node) => node.id === ui.selectedId) ?? null
+      const phase = phaseOf(data)
+      const realityState = data?.network?.realityState ?? data?.reality?.state ?? 'unauthorized'
+      const knowledgeState = data?.knowledgeState?.state ?? 'not_configured'
 
-      if (empty && !data?.loading) {
+      const registryState = data?.registryState?.state ?? 'not_configured'
+      const today = ui.today ?? data?.today ?? null
+      const laneCounts = { past: 0, present: 0, future: 0 }
+      for (const node of nodes) laneCounts[node.lane ?? 'present'] = (laneCounts[node.lane ?? 'present'] ?? 0) + 1
+      const chips = h('div', { key: 'chips', className: 'sl-chips' }, [
+        h('button', {
+          key: 'r', type: 'button',
+          className: 'sl-chip sl-chip-btn' + (realityState === 'authorized' ? ' sl-chip-ok' : ''),
+          title: '查看连接与授权',
+          onClick: () => store.set({ rightTab: 'connect' }),
+        }, 'Family Space ' + (realityState === 'authorized' ? '已连接' : realityState === 'expired' ? '授权已过期，现在是未知' : '尚未授权')),
+        h('button', {
+          key: 'k', type: 'button',
+          className: 'sl-chip sl-chip-btn' + (knowledgeState === 'connected' ? ' sl-chip-ok' : ''),
+          title: '查看知识服务状态',
+          onClick: () => store.set({ rightTab: 'connect' }),
+        }, '知识 ' + (knowledgeState === 'connected' ? '已连接' : knowledgeState === 'empty' ? '已连接（暂无内容）' : knowledgeState === 'error' ? '目录读不到' : '未配置')),
+        h('button', {
+          key: 'g', type: 'button',
+          className: 'sl-chip sl-chip-btn' + (registryState === 'connected' ? ' sl-chip-ok' : ''),
+          title: '查看项目登记',
+          onClick: () => store.set({ rightTab: 'connect' }),
+        }, '项目登记 ' + (registryState === 'connected' ? '已连接' : '未连接')),
+      ])
+      const header = h('div', { key: 'head', className: 'sl-today-head' }, [
+        h('div', { key: 't', className: 'sl-row' }, [
+          h('h2', { key: 'h', className: 'sl-h2' }, '我的现实与工作网络'),
+          chips,
+        ]),
+      ])
+
+      if (nodes.length === 0 && !data?.loading) {
         return h('div', { className: 'sl-stage' }, [
-          h('div', { key: 'c', className: 'sl-center' }, h('p', { className: 'sl-muted' }, '还没有真实节点。先从一个真实项目，或下面一句话开始。')),
-          h(Composer, { key: 'composer', data, approval }),
+          header,
+          h(TodayPanel, { key: 'today', today, busy: ui.todayBusy, onAction: onTodayAction }),
+          h('div', { key: 'empty', className: 'sl-empty' }, [
+            h('h3', { key: 'h', className: 'sl-h2' }, '生络，你的个人智能伙伴。'),
+            h('p', { key: 'p', className: 'sl-muted' }, '了解你的现实，连接你的资源，陪你把重要的事情做好。'),
+            h('div', { key: 's', className: 'sl-empty-states' }, [
+              h('button', { key: 'r', type: 'button', className: 'sl-quiet', onClick: () => store.set({ rightTab: 'connect' }) }, realityState === 'authorized' ? '个人现实：已授权' : '个人现实：尚未授权 → 去连接'),
+              h('span', { key: 'k', className: 'sl-quiet sl-static' }, knowledgeState === 'connected' ? '知识：已连接' : '知识：未配置'),
+              h('span', { key: 'w', className: 'sl-quiet sl-static' }, '工作：还没有进行中的事'),
+            ]),
+          ]),
+          h(Composer, { key: 'c', data }),
         ])
       }
 
       return h('div', { className: 'sl-stage' }, [
-        h('div', { key: 'map', className: 'sl-center' }, [
-          h(NetworkMap, { key: 'm', data, selected, onSelect: setSelected }),
-          h(Relations, { key: 'r', data, onSelect: setSelected }),
-          selected ? h('div', { key: 'detail', className: 'sl-node-detail' }, [
+        header,
+        h(TodayPanel, { key: 'today', today, busy: ui.todayBusy, onAction: onTodayAction }),
+        h('div', { key: 'lanes', className: 'sl-lanes sl-small sl-muted' }, [
+          '来路 ' + laneCounts.past,
+          ' · 当前 ' + laneCounts.present,
+          ' · 未来 ' + laneCounts.future,
+        ]),
+        h('div', { key: 'map-wrap', className: 'sl-center' }, [
+          h(NetworkMap, { key: 'm', data, selectedId: ui.selectedId, onSelect: (node) => store.set({ selectedId: node.id, rightTab: 'work' }), pulses: ui.pulses, reducedMotion: ui.reducedMotion }),
+          h('div', { key: 'phase', className: 'sl-phase sl-phase-' + phase.id }, phase.title + ' · ' + phase.line),
+          h(NodeDetail, { key: 'detail', node: selected }),
+          ui.conversation ? h('div', { key: 'conv', className: 'sl-node-detail' }, [
             h('div', { key: 'h', className: 'sl-row' }, [
-              h('strong', { key: 't' }, selected.title),
-              h('button', { key: 'x', type: 'button', className: 'sl-quiet sl-small', onClick: () => setSelected(null) }, '收起'),
+              h('strong', { key: 't' }, ui.conversation.title || '对话原文'),
+              h('button', { key: 'x', type: 'button', className: 'sl-quiet sl-small', onClick: () => store.set({ conversation: null }) }, '收起'),
             ]),
-            h('p', { key: 's', className: 'sl-muted' }, selected.subtitle ?? ''),
-            selected.sourceRef ? h('p', { key: 'src', className: 'sl-muted' }, '来源：' + selected.sourceRef.label + (selected.time?.label ? ' · ' + selected.time.label : '')) : null,
-            selected.openable?.kind === 'session'
-              ? h('button', { key: 'o', type: 'button', className: 'sl-quiet sl-small', onClick: () => openNativeSession(selected.openable.target) }, '打开原生会话')
-              : null,
-            selected.openable?.kind === 'conversation'
-              ? h('button', { key: 'c', type: 'button', className: 'sl-quiet sl-small', onClick: () => openConversation(selected.openable.target) }, '看原始对话证据')
-              : null,
-            selected.openable?.kind === 'artifact'
-              ? h('a', { key: 'a', className: 'sl-link-btn', href: API + '/artifact?path=' + encodeURIComponent(selected.openable.target), target: '_blank', rel: 'noreferrer noopener' }, '打开成果')
-              : null,
-            ui.conversation ? h('div', { key: 'conversation', className: 'sl-conversation' }, [
-              h('div', { key: 'h', className: 'sl-row' }, [
-                h('strong', { key: 't' }, ui.conversation.title || '对话原文'),
-                h('button', { key: 'x', type: 'button', className: 'sl-quiet sl-small', onClick: () => store.set({ conversation: null }) }, '收起'),
-              ]),
-              h('p', { key: 'm', className: 'sl-muted' }, '逐字原文，未改写；只包含你有权访问的对话。'),
-              h('ul', { key: 'l', className: 'sl-messages' }, (ui.conversation.messages ?? []).slice(0, 20).map((message) => h('li', { key: message.id }, [
-                h('span', { key: 'w', className: 'sl-who' }, message.speakerRef === 'self' ? '本人' : message.speakerRef === 'ai' ? '家明' : '未知'),
-                h('span', { key: 't', className: 'sl-msg-text' }, message.text),
-              ]))),
-            ]) : null,
+            h('p', { key: 'm', className: 'sl-muted' }, '逐字原文，未改写；只包含你有权访问的对话。'),
+            h('ul', { key: 'l', className: 'sl-messages' }, (ui.conversation.messages ?? []).slice(0, 20).map((message) => h('li', { key: message.id }, [
+              h('span', { key: 'w', className: 'sl-who' }, message.speakerRef === 'self' ? '本人' : message.speakerRef === 'ai' ? '家明' : '未知'),
+              h('span', { key: 't', className: 'sl-msg-text' }, message.text),
+            ]))),
           ]) : null,
-          h('p', { key: 'hint', className: 'sl-hint' }, (data?.network?.hiddenCount ?? 0) > 0
-            ? '还有 ' + data.network.hiddenCount + ' 个真实节点收在详情里。这里只放跟当前这件事有关的。'
-            : '节点全部来自真实项目、会话、成果和你的现实；没来源的一律标未知。'),
         ]),
-        h(Composer, { key: 'composer', data, approval }),
+        h(Composer, { key: 'composer', data }),
       ])
     }
 
-    function ListView({ title, items, render, emptyText, footer }) {
-      return h('div', { className: 'sl-stage sl-stage-list' }, [
-        h('h2', { key: 'h', className: 'sl-h2' }, title),
-        items.length === 0
-          ? h('p', { key: 'e', className: 'sl-muted' }, emptyText)
-          : h('ul', { key: 'ul', className: 'sl-list' }, items.map(render)),
-        footer ?? null,
-      ])
-    }
-
-    function Composer({ data, approval }) {
-      const state = useStore()
-      const contract = contractLines(data)
-      const disabled = state.phase === 'working' || state.busy
-      return h('div', { className: 'sl-composer' }, [
-        state.phase === 'confirm' ? h('div', { key: 'k', className: 'sl-contract' }, [
-          h('div', { key: 't', className: 'sl-contract-title' }, '先确认，再动手'),
-          h('dl', { key: 'dl' }, [
-            h('dt', { key: 'a' }, '我会用到'), h('dd', { key: 'a2' }, contract.uses.join('；')),
-            h('dt', { key: 'b' }, '我会交付'), h('dd', { key: 'b2' }, contract.delivers.join('；')),
-            h('dt', { key: 'c' }, '需要你定'), h('dd', { key: 'c2' }, contract.decisions.join('；')),
-          ]),
-        ]) : null,
-        h('form', {
-          key: 'f',
-          className: 'sl-input-row',
-          onSubmit: (event) => {
-            event.preventDefault()
-            if (disabled) return
-            if (state.phase === 'confirm') beginWork()
-            else store.set({ phase: 'confirm' })
-          },
-        }, [
-          h('input', {
-            key: 'i',
-            className: 'sl-input',
-            value: state.goal,
-            placeholder: '今天你想推进什么？',
-            onChange: (event) => store.set({ goal: event.target.value, phase: event.target.value.trim() ? store.get().phase : 'idle' }),
-            disabled,
-            'aria-label': '今天你想推进什么？',
-          }),
-          state.phase === 'working'
-            ? h('button', { key: 's', type: 'button', className: 'sl-quiet', onClick: stopWork }, '停下')
-            : h('button', { key: 'n', type: 'submit', className: 'sl-primary', disabled: disabled || !state.goal.trim() },
-                state.phase === 'confirm' ? '开始工作' : '下一步'),
-        ]),
-        approval ? h('p', { key: 'ap', className: 'sl-approval-inline' }, '有一个审批在等你 —— 去原生会话里决定，我在这里等。') : null,
-        state.phase === 'working' ? h('p', { key: 'w', className: 'sl-hint' }, '正在真实执行。审批、工具结果都是 DSH 原生的，我不会跳过它们。') : null,
-      ])
-    }
-
-    function ShengluoPanel(props) {
-      const state = useStore()
-      React.useEffect(() => { attach(); return undefined }, [])
-
-      // 原生审批状态：只读，用来提醒，不去抢审批本身（审批由 DSH 原生界面负责）。
-      const sessionId = state.sessionId ?? state.data?.activeRun?.sessionId ?? null
-      let approval = false
-      try {
-        if (sessionId && typeof props.useSessionStatus === 'function') {
-          approval = Boolean(props.useSessionStatus((map) => map.get(sessionId)?.pendingInteraction !== undefined))
-        }
-      } catch {
-        approval = false
-      }
-
-      const data = state.data
+    function ConnectView({ data }) {
+      const ui = useStore()
+      const reality = data?.reality ?? {}
       const network = data?.network ?? {}
+      const state = reality.state ?? 'unauthorized'
+      const stateText = {
+        authorized: '已授权',
+        unauthorized: '尚未授权（个人现实现在是未知，不是空的）',
+        pending: '等待你在网页里确认',
+        expired: '授权已过期，需要重新连接',
+        revoked: '已撤销',
+        error: '连接失败',
+      }[state] ?? state
+      return h('div', { className: 'sl-right-inner' }, [
+        h('h3', { key: 'h', className: 'sl-h3' }, '连接与授权'),
+        h('div', { key: 'card', className: 'sl-card' }, [
+          h('span', { key: 't', className: 'sl-card-title' }, 'Family Space'),
+          h('p', { key: 's', className: 'sl-muted' }, '状态：' + stateText),
+          reality.subject?.displayName ? h('p', { key: 'n', className: 'sl-muted' }, '账号：' + reality.subject.displayName) : null,
+          (reality.scopes ?? []).length > 0
+            ? h('ul', { key: 'sc', className: 'sl-scopes' }, reality.scopes.map((scope) => h('li', { key: scope }, scope === 'conversation.read.own' ? '读取你自己和家明的对话' : scope === 'personal_reality.read.own' ? '使用你自己的个人现实' : scope)))
+            : null,
+          reality.expiresAt ? h('p', { key: 'e', className: 'sl-muted' }, '到期：' + String(reality.expiresAt).slice(0, 16).replace('T', ' ')) : null,
+          ui.device
+            ? h('div', { key: 'd', className: 'sl-card' }, [
+                h('span', { key: 'c', className: 'sl-code' }, ui.device.userCode),
+                h('p', { key: 'm', className: 'sl-muted' }, '在打开的授权页里登录并确认；完成后这里会自动变成已连接。'),
+                ui.device.verificationUri ? h('a', { key: 'l', className: 'sl-link-btn', href: ui.device.verificationUri, target: '_blank', rel: 'noreferrer noopener' }, '打开授权页') : null,
+              ])
+            : null,
+          state === 'authorized'
+            ? h('button', { key: 'r', type: 'button', className: 'sl-quiet', onClick: () => revokeReality() }, '撤销授权')
+            : h('button', { key: 'c', type: 'button', className: 'sl-primary', onClick: () => connectReality() }, '连接 Family Space'),
+        ]),
+        h('div', { key: 'knowledge', className: 'sl-card' }, [
+          h('span', { key: 't', className: 'sl-card-title' }, '知识（MKI）'),
+          h('p', { key: 's', className: 'sl-muted' }, data?.knowledgeState?.state === 'connected'
+            ? '已连接：' + (data.knowledgeState.source === 'mki-service' ? 'MKI 知识服务' : '本地知识目录（开发模式）') + '。'
+            : data?.knowledgeState?.state === 'empty' ? '目录已配置，但还没有内容。'
+              : data?.knowledgeState?.state === 'error' ? '读不到知识目录。'
+                : '未连接（MKI_BASE_URL / MKI_API_KEY 未配置）。知识服务不可用时我不会编知识。'),
+        ]),
+        h('div', { key: 'registry', className: 'sl-card' }, [
+          h('span', { key: 't', className: 'sl-card-title' }, '项目登记（Agent Space）'),
+          h('p', { key: 's', className: 'sl-muted' }, data?.registryState?.state === 'connected'
+            ? '已连接：共 ' + (data.registryState.total ?? 0) + ' 个项目。只做定位；每个项目现在到哪了，要回它自己的仓库核实。'
+            : '未连接（找不到项目登记文件）。'),
+        ]),
+        h('div', { key: 'work', className: 'sl-card' }, [
+          h('span', { key: 't', className: 'sl-card-title' }, '项目与文件'),
+          h('p', { key: 's', className: 'sl-muted' }, (network.workspaces ?? []).length > 0
+            ? '当前工作区：' + ((network.workspaces.find((workspace) => workspace.active) ?? network.workspaces[0]).path)
+            : 'DSH 里还没有打开的项目工作区。'),
+        ]),
+      ])
+    }
 
-      const body = (() => {
-        if (state.loading && !data) return h('div', { className: 'sl-stage' }, h('p', { className: 'sl-muted' }, '正在读取真实状态…'))
-        if (state.error && !data) {
-          return h('div', { className: 'sl-stage' }, h('div', { className: 'sl-error' }, [
-            h('p', { key: 'm' }, '本机接口读不到：' + state.error),
-            h('button', { key: 'r', type: 'button', className: 'sl-quiet', onClick: () => loadState() }, '重试'),
-          ]))
-        }
-        if (state.view === 'projects') {
-          return h(ListView, {
-            title: '项目',
-            items: network.workspaces ?? [],
-            emptyText: '本机还没有登记过 DSH 项目。在工作区里打开一个目录，它就会出现在这里。',
-            render: (workspace) => h('li', { key: workspace.id, className: 'sl-list-item' }, [
-              h('div', { key: 't', className: 'sl-strong' }, workspace.title),
-              h('div', { key: 'p', className: 'sl-muted' }, workspace.path),
+    function RightPanel({ data }) {
+      const ui = useStore()
+      return h('aside', { className: 'sl-right' }, [
+        h('div', { key: 'tabs', className: 'sl-right-tabs' }, rightTabs()),
+        ui.rightTab === 'work'
+          ? h(WorkTab, { key: 'w', data })
+          : ui.rightTab === 'understand'
+            ? h(UnderstandTab, { key: 'u', data })
+            : ui.rightTab === 'connect'
+              ? h(ConnectView, { key: 'c', data })
+              : h(TraceTab, { key: 't', data }),
+      ])
+    }
+
+    // ————————————————————————— V2.2 A 方案界面 —————————————————————————
+
+    const V22_KIND = { decision: '等你决定', run: '没做完的事', reality: '你的现实', project: '项目', knowledge: '知识' }
+    const V22_LANES = [{ id: 'past', label: '来路' }, { id: 'present', label: '现在' }, { id: 'future', label: '未来' }]
+    const v22RunStatus = (status) => status === 'running' ? '进行中' : status === 'waiting-for-you' ? '等你确认' : status === 'verifying' ? '验收中' : '进行中'
+    const v22Date = () => new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' })
+    const v22At = (at) => at ? String(at).slice(0, 16).replace('T', ' ') : ''
+
+    function V22Card({ item, onRelation, onAction, onDismiss }) {
+      const actionLabel = item.action?.kind === 'open-session' ? '回原生会话' : item.action?.kind === 'open-conversation' ? '查看对话' : '去知识页'
+      return h('article', { className: 'sl-v22-card' }, [
+        h('div', { key: 'top', className: 'sl-v22-card-top' }, [
+          h('span', { key: 'k', className: 'sl-v22-tag' }, V22_KIND[item.kind] ?? '值得关注'),
+          item.at ? h('time', { key: 't', className: 'sl-v22-time' }, v22At(item.at)) : null,
+        ]),
+        h('h3', { key: 'title' }, item.title),
+        h('p', { key: 'why', className: 'sl-v22-why' }, item.why),
+        item.evidence?.length ? h('div', { key: 'ev', className: 'sl-v22-evidence' }, [
+          h('strong', { key: 'l' }, '依据'),
+          ...item.evidence.map((ev, index) => h('span', { key: index }, [
+            ev.label || ev.type,
+            ev.speaker ? ' · ' + ev.speaker : '',
+            ev.at ? ' · ' + String(ev.at).slice(0, 10) : '',
+            Array.isArray(ev.changed) && ev.changed.length ? ' · ' + ev.changed.length + ' 处改动' : '',
+          ].filter(Boolean).join(''))),
+        ]) : null,
+        item.unknown ? h('p', { key: 'unknown', className: 'sl-v22-unknown' }, '还不确定：' + item.unknown) : null,
+        item.next ? h('p', { key: 'next', className: 'sl-v22-next' }, '下一步：' + item.next) : null,
+        h('div', { key: 'actions', className: 'sl-v22-actions' }, [
+          h('button', { key: 'rel', type: 'button', className: 'sl-v22-primary', onClick: onRelation }, '了解这件事'),
+          item.action ? h('button', { key: 'act', type: 'button', className: 'sl-v22-ghost', onClick: () => onAction(item.action) }, actionLabel) : null,
+          h('button', { key: 'dismiss', type: 'button', className: 'sl-v22-ghost', onClick: () => onDismiss(item.id) }, '先放一放'),
+        ]),
+      ])
+    }
+
+    function V22Composer({ ui }) {
+      return h('div', { className: 'sl-v22-composer' }, [
+        h('label', { key: 'l', htmlFor: 'sl-v22-goal' }, '你也可以直接告诉我'),
+        h('div', { key: 'row', className: 'sl-v22-input-row' }, [
+          h('input', {
+            key: 'i', id: 'sl-v22-goal', className: 'sl-v22-input',
+            placeholder: '继续一件事，或者说说你现在遇到的问题…',
+            value: ui.goal, disabled: ui.busy,
+            onChange: (event) => store.set({ goal: event.target.value }),
+            onKeyDown: (event) => { if (event.key === 'Enter' && !event.nativeEvent?.isComposing) beginWork() },
+          }),
+          h('button', { key: 'b', type: 'button', className: 'sl-v22-send', disabled: ui.busy || !ui.goal.trim(), onClick: () => beginWork() }, ui.busy ? '正在交给原生会话…' : '开始'),
+        ]),
+        h('p', { key: 'hint', className: 'sl-v22-hint' }, '说一句话，我会在 DSH 原生会话里做；需要动手前会先让你确认。'),
+      ])
+    }
+
+    function V22Today({ data, today, busy, dismissed, onRelation, onAction, onDismiss, onConnect, onWork, onScan, onOpenSession, ui }) {
+      const items = (today?.items ?? []).filter((item) => !dismissed[item.id])
+      const active = data?.activeRun
+      const activeLive = active && ['running', 'waiting-for-you', 'verifying'].includes(active.status)
+      const realityState = data?.reality?.state ?? data?.network?.realityState ?? 'unauthorized'
+      const knowledgeState = data?.knowledgeState?.state ?? 'not_configured'
+      const registryState = data?.registryState?.state ?? 'not_configured'
+      const errors = today?.errors ?? []
+      let body
+      if (busy && !today) {
+        body = h('p', { key: 'loading', className: 'sl-v22-note' }, '正在核对真实来源…')
+      } else if (errors.length > 0) {
+        body = h('div', { key: 'err', className: 'sl-v22-error' }, [
+          h('strong', { key: 't' }, '今天检查没读全'),
+          h('p', { key: 'p' }, '这不是“没有值得关注的事”，是这次没读全。'),
+          h('details', { key: 'd' }, [h('summary', { key: 's' }, '诊断详情'), h('p', { key: 'm' }, errors.join('；'))]),
+          h('button', { key: 'r', type: 'button', className: 'sl-v22-ghost', onClick: onScan }, '重试'),
+        ])
+      } else if (items.length === 0) {
+        body = h('p', { key: 'empty', className: 'sl-v22-note' }, today?.note || '目前没有值得打扰你的事。')
+      } else {
+        body = h('div', { key: 'list' }, items.map((item) => h(V22Card, { key: item.id, item, onRelation, onAction, onDismiss })))
+      }
+      return h('div', { className: 'sl-v22-screen' }, [
+        h('div', { key: 'scroll', className: 'sl-v22-scroll' }, [
+          h('div', { key: 'top', className: 'sl-v22-top' }, [
+            h('span', { key: 'd', className: 'sl-v22-date' }, v22Date()),
+            h('div', { key: 'links', className: 'sl-v22-links' }, [
+              h('button', { key: 'rel', type: 'button', className: 'sl-v22-link', onClick: onRelation }, '关系网络'),
+              h('button', { key: 'work', type: 'button', className: 'sl-v22-link', onClick: onWork }, '工作'),
+              h('button', { key: 'conn', type: 'button', className: 'sl-v22-link', onClick: onConnect }, '连接'),
             ]),
-          })
-        }
-        if (state.view === 'artifacts') {
-          return h(ListView, {
-            title: '成果',
-            items: network.artifacts ?? [],
-            emptyText: '还没有真实成果。完成一件事后，写在工作区里的文件会出现在这里。',
-            render: (artifact) => h('li', { key: artifact.path, className: 'sl-list-item' }, [
-              h('div', { key: 't', className: 'sl-strong' }, artifact.name),
-              h('div', { key: 'm', className: 'sl-muted' }, [artifact.kind, artifact.sizeLabel, artifact.modifiedAt ? String(artifact.modifiedAt).slice(0, 16).replace('T', ' ') : ''].filter(Boolean).join(' · ')),
-              h('a', { key: 'a', className: 'sl-link-btn', href: API + '/artifact?path=' + encodeURIComponent(artifact.path), target: '_blank', rel: 'noreferrer noopener' }, '打开'),
+          ]),
+          h('h1', { key: 'h1', className: 'sl-v22-heading' }, '今天'),
+          h('p', { key: 'lead', className: 'sl-v22-lead' }, '我正在了解你的现实、目标和正在发生的事情。'),
+          realityState !== 'authorized' ? h('div', { key: 'unauth', className: 'sl-v22-error' }, [
+            h('strong', { key: 't' }, '个人现实尚未连接'),
+            h('p', { key: 'p' }, '这不代表没有相关经历，只是我现在看不到。'),
+            h('button', { key: 'c', type: 'button', className: 'sl-v22-ghost', onClick: onConnect }, '去连接'),
+          ]) : null,
+          h('section', { key: 'today', className: 'sl-v22-section' }, [
+            h('div', { key: 'head', className: 'sl-v22-section-head' }, [
+              h('h2', { key: 'h' }, '今天值得关注'),
+              h('span', { key: 'c', className: 'sl-v22-count' }, (items.length || 0) + ' 件'),
             ]),
-          })
-        }
-        if (state.view === 'knowledge') {
-          return h(ListView, {
-            title: '知识',
-            items: network.knowledge ?? [],
-            emptyText: '还没有配置知识来源（MKI 目录）。没有来源时我不会编知识条目。',
-            render: (item) => h('li', { key: item.id, className: 'sl-list-item' }, [
-              h('div', { key: 't', className: 'sl-strong' }, item.title),
-              h('div', { key: 'm', className: 'sl-muted' }, [item.label, item.sizeLabel, item.at ? String(item.at).slice(0, 10) : ''].filter(Boolean).join(' · ')),
-            ]),
-          })
-        }
-        if (state.view === 'plugins') {
-          return h('div', { className: 'sl-stage sl-stage-list' }, [
-            h('h2', { key: 'h', className: 'sl-h2' }, '插件'),
-            h('p', { key: 'p', className: 'sl-muted' }, '生络是 DeepSeek Harness 的原生插件。插件的安装、启停、升级由 DSH 自己的插件管理负责 —— 生络不复制一套。'),
-            h('button', { key: 'b', type: 'button', className: 'sl-primary', onClick: openNativePlugins }, '打开 DSH 原生插件管理'),
-            h('ul', { key: 'ul', className: 'sl-list' }, [
-              h('li', { key: 'self', className: 'sl-list-item' }, [
-                h('div', { key: 't', className: 'sl-strong' }, '生络（本插件）'),
-                h('div', { key: 'm', className: 'sl-muted' }, '侧栏入口 + 网络主面板 + Family Space 授权 + 生络伙伴 preset'),
+            body,
+          ]),
+          activeLive ? h('div', { key: 'active', className: 'sl-v22-active' }, [
+            h('span', { key: 'dot', className: 'sl-v22-tag' }, '●'),
+            h('span', { key: 't' }, ['你正在做：', h('strong', { key: 'g' }, active.goal ?? '—'), ' · ' + v22RunStatus(active.status)]),
+            active.sessionId ? h('button', { key: 'o', type: 'button', className: 'sl-v22-link', onClick: () => onOpenSession(active.sessionId) }, '打开') : null,
+          ]) : null,
+          h('div', { key: 'status', className: 'sl-v22-status' }, [
+            h('span', { key: 'r' }, 'Family Space ' + (realityState === 'authorized' ? '已连接' : realityState === 'expired' ? '授权已过期' : '未授权')),
+            h('span', { key: 'k' }, '知识 ' + (knowledgeState === 'connected' ? '已连接' : knowledgeState === 'empty' ? '已连接（暂无内容）' : knowledgeState === 'error' ? '目录读不到' : '未配置')),
+            h('span', { key: 'g' }, '项目登记 ' + (registryState === 'connected' ? '已连接' : '未连接')),
+            h('button', { key: 'c', type: 'button', className: 'sl-v22-link', onClick: onConnect }, '设置'),
+          ]),
+        ]),
+        h(V22Composer, { key: 'composer', ui }),
+      ])
+    }
+
+    function V22Correction({ runId, ui }) {
+      if (!runId) return null
+      return h('div', { className: 'sl-v22-correct' }, [
+        h('p', { key: 'l' }, '哪里理解错了？'),
+        h('textarea', {
+          key: 't', value: ui.correctionText,
+          placeholder: '用自己的话，不要粘贴家庭原文',
+          onChange: (event) => store.set({ correctionText: event.target.value }),
+        }),
+        h('button', { key: 'b', type: 'button', className: 'sl-v22-ghost', onClick: () => saveCorrection(runId) }, '记住纠正'),
+      ])
+    }
+
+    function V22Relation({ data, selectedNodeId, onSelect, onBack, onConnect }) {
+      const ui = useStore()
+      const seen = new Set()
+      const all = (data?.network?.nodes ?? []).filter((node) => node && node.title).filter((node) => {
+        const key = node.kind + '|' + node.title
+        if (seen.has(key)) return false
+        seen.add(key)
+        return true
+      }).slice(0, 9)
+      const selected = all.find((node) => node.id === selectedNodeId) ?? null
+      return h('div', { className: 'sl-v22-relation' }, [
+        h('div', { key: 'scroll', className: 'sl-v22-relation-scroll' }, [
+          h('button', { key: 'back', type: 'button', className: 'sl-v22-back', onClick: onBack }, '← 回到今天'),
+          h('h1', { key: 'h1', className: 'sl-v22-relation-title' }, '这件事和什么有关'),
+          h('p', { key: 'sub', className: 'sl-v22-relation-sub' }, data?.activeRun?.goal ?? '从今天的一件事展开'),
+          h('p', { key: 'note', className: 'sl-v22-relation-note' }, '只看与这件事有关的 ' + all.length + ' 个节点；不是全部。'),
+          all.length === 0
+            ? h('p', { key: 'empty', className: 'sl-v22-empty' }, '现在还没有可展开的关系。等有真实事件或来源后，这里才会出现节点。')
+            : h('div', { key: 'body', className: 'sl-v22-relation-body' + (selected ? '' : ' no-inspector') }, [
+                h('div', { key: 'lanes', className: 'sl-v22-lanes' }, V22_LANES.map((lane) => {
+                  const laneNodes = all.filter((node) => (node.lane ?? 'present') === lane.id)
+                  return h('section', { key: lane.id, className: 'sl-v22-lane' }, [
+                    h('div', { key: 'label', className: 'sl-v22-lane-title' }, lane.label),
+                    h('div', { key: 'list', className: 'sl-v22-lane-list' }, laneNodes.length === 0
+                      ? h('p', { key: 'empty', className: 'sl-v22-empty' }, '暂无')
+                      : laneNodes.map((node) => h('button', {
+                          key: node.id, type: 'button',
+                          className: 'sl-v22-node ' + (node.lane ?? 'present') + (selectedNodeId === node.id ? ' selected' : ''),
+                          onClick: () => onSelect(node.id),
+                        }, [
+                          h('span', { key: 'k', className: 'sl-v22-node-tag' }, (KIND[node.kind] ?? { label: node.kind }).label),
+                          h('span', { key: 't', className: 'sl-v22-node-title' }, node.title),
+                          node.subtitle ? h('span', { key: 'm', className: 'sl-v22-node-meta' }, node.subtitle) : null,
+                        ]))),
+                  ])
+                })),
+                selected ? h('aside', { key: 'ins', className: 'sl-v22-inspector' }, [
+                  h('div', { key: 'head', className: 'sl-v22-inspector-head' }, [
+                    h('span', { key: 'k' }, '你选中的是'),
+                    h('button', { key: 'x', type: 'button', className: 'sl-v22-link', onClick: () => onSelect(null) }, '收起'),
+                  ]),
+                  h(NodeDetail, { key: 'detail', node: selected, onClose: () => onSelect(null) }),
+                  h(V22Correction, { key: 'corr', runId: data?.activeRun?.runId ?? null, ui }),
+                ]) : null,
               ]),
-            ]),
+          h('div', { key: 'connect', className: 'sl-v22-status' }, [
+            h('button', { key: 'c', type: 'button', className: 'sl-v22-link', onClick: onConnect }, '连接与授权'),
+          ]),
+        ]),
+      ])
+    }
+
+    function V22Drawer({ data, tab, onClose }) {
+      if (!tab) return null
+      return h('div', { className: 'sl-v22-drawer-layer' }, [
+        h('div', { key: 'backdrop', className: 'sl-v22-backdrop', onClick: onClose }),
+        h('aside', { key: 'drawer', className: 'sl-v22-drawer', onClick: (event) => event.stopPropagation() }, [
+          h('div', { key: 'head', className: 'sl-v22-drawer-head' }, [
+            h('strong', { key: 't' }, tab === 'connect' ? '连接与授权' : tab === 'understand' ? '理解与依据' : tab === 'trace' ? '轨迹' : '工作记录'),
+            h('button', { key: 'x', type: 'button', className: 'sl-v22-link', onClick: onClose }, '收起'),
+          ]),
+          h(RightPanel, { key: 'panel', data }),
+        ]),
+      ])
+    }
+
+    const V22_CSS = `
+.sl-v22{position:relative;height:100%;min-height:0;display:flex;flex-direction:column;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary)}
+.sl-v22-main{flex:1;min-height:0;display:flex;flex-direction:column}
+.sl-v22-screen{height:100%;min-height:0;display:flex;flex-direction:column}
+.sl-v22-scroll{flex:1;min-height:0;overflow-y:auto;width:100%;max-width:820px;margin:0 auto;padding:24px 32px 14px;scrollbar-width:thin}
+.sl-v22-top{display:flex;align-items:center;justify-content:space-between;gap:16px}
+.sl-v22-date{color:var(--dsw-alias-label-secondary);font-size:12px;letter-spacing:.03em;font-variant-numeric:tabular-nums}
+.sl-v22-links{display:flex;gap:14px;align-items:center}
+.sl-v22-link{background:none;border:0;color:var(--dsw-alias-label-secondary);font-size:12px;padding:4px 0;cursor:pointer;min-height:24px}
+.sl-v22-link:hover{color:var(--dsw-alias-label-primary)}
+.sl-v22-heading{font-family:"Songti SC","Noto Serif SC",Georgia,serif;font-size:32px;line-height:1.2;font-weight:500;letter-spacing:.02em;margin:14px 0 0}
+.sl-v22-lead{color:var(--dsw-alias-label-secondary);font-size:14px;line-height:1.7;margin:8px 0 0;max-width:560px}
+.sl-v22-section{margin-top:24px}
+.sl-v22-section-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding-bottom:9px;border-bottom:1px solid var(--dsw-alias-border-l1)}
+.sl-v22-section-head h2{font-size:18px;line-height:1.4;font-weight:600;margin:0}
+.sl-v22-count{color:var(--dsw-alias-label-secondary);font-size:12px}
+.sl-v22-card{background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l1);border-radius:14px;padding:15px 20px;margin-top:12px;box-shadow:inset 2px 0 0 var(--dsw-alias-brand-primary)}
+.sl-v22-card-top{display:flex;justify-content:space-between;gap:12px;align-items:center}
+.sl-v22-tag{color:var(--dsw-alias-brand-primary);font-size:12px}
+.sl-v22-time{color:var(--dsw-alias-label-secondary);font-size:12px;font-variant-numeric:tabular-nums}
+.sl-v22-card h3{font-size:18px;line-height:1.5;font-weight:600;margin:7px 0 6px;letter-spacing:.01em}
+.sl-v22-why{color:var(--dsw-alias-label-secondary);font-size:14px;line-height:1.7;margin:0}
+.sl-v22-evidence{display:flex;flex-wrap:wrap;gap:6px 12px;margin-top:11px;padding-top:10px;border-top:1px solid var(--dsw-alias-border-l1);color:var(--dsw-alias-label-secondary);font-size:12px}
+.sl-v22-evidence strong{color:var(--dsw-alias-label-primary);font-weight:500}
+.sl-v22-unknown{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:1.6;margin:8px 0 0}
+.sl-v22-next{color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.6;margin:6px 0 0}
+.sl-v22-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+.sl-v22-primary{background:var(--dsw-alias-brand-primary);color:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-brand-primary);border-radius:9px;padding:7px 14px;font-size:13px;cursor:pointer}
+.sl-v22-primary:hover{opacity:.9}
+.sl-v22-ghost{background:transparent;color:var(--dsw-alias-label-secondary);border:1px solid var(--dsw-alias-border-l1);border-radius:9px;padding:7px 12px;font-size:13px;cursor:pointer}
+.sl-v22-ghost:hover{color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-border-l2)}
+.sl-v22-active{display:flex;align-items:center;gap:8px;padding:11px 0;border-bottom:1px solid var(--dsw-alias-border-l1);color:var(--dsw-alias-label-secondary);font-size:12px}
+.sl-v22-active strong{color:var(--dsw-alias-label-primary);font-weight:500}
+.sl-v22-active .sl-v22-link{margin-left:auto}
+.sl-v22-status{display:flex;flex-wrap:wrap;gap:4px 12px;align-items:center;padding:12px 0;color:var(--dsw-alias-label-secondary);font-size:11px}
+.sl-v22-status .sl-v22-link{margin-left:auto}
+.sl-v22-note{color:var(--dsw-alias-label-secondary);font-size:13px;line-height:1.7;margin:12px 0 0}
+.sl-v22-error{background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l1);border-radius:12px;padding:14px 16px;margin-top:12px}
+.sl-v22-error strong{display:block;font-size:14px}
+.sl-v22-error p{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:1.6;margin:5px 0 0}
+.sl-v22-error details{color:var(--dsw-alias-label-secondary);font-size:11px;margin-top:8px}
+.sl-v22-error summary{cursor:pointer}
+.sl-v22-composer{width:100%;max-width:820px;margin:0 auto;padding:12px 32px 16px;border-top:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-base)}
+.sl-v22-composer label{display:block;color:var(--dsw-alias-label-secondary);font-size:12px;margin-bottom:8px}
+.sl-v22-input-row{display:flex;gap:8px}
+.sl-v22-input{flex:1;min-width:0;background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1);border-radius:9px;color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;padding:9px 12px}
+.sl-v22-input::placeholder{color:var(--dsw-alias-label-secondary);opacity:.75}
+.sl-v22-input:focus{outline:none;border-color:var(--dsw-alias-brand-primary)}
+.sl-v22-send{background:transparent;border:1px solid var(--dsw-alias-border-l2);border-radius:9px;color:var(--dsw-alias-label-primary);font-size:13px;padding:8px 14px;cursor:pointer}
+.sl-v22-send:hover{border-color:var(--dsw-alias-brand-primary)}
+.sl-v22-hint{color:var(--dsw-alias-label-secondary);font-size:11px;line-height:1.6;margin:7px 0 0}
+.sl-v22-relation{height:100%;min-height:0;display:flex;flex-direction:column}
+.sl-v22-relation-scroll{flex:1;min-height:0;overflow:auto;width:100%;max-width:1120px;margin:0 auto;padding:22px 32px 32px}
+.sl-v22-back{background:none;border:0;color:var(--dsw-alias-label-secondary);font-size:12px;padding:4px 0;cursor:pointer;min-height:24px}
+.sl-v22-back:hover{color:var(--dsw-alias-label-primary)}
+.sl-v22-relation-title{font-family:"Songti SC","Noto Serif SC",Georgia,serif;font-size:28px;line-height:1.3;font-weight:500;margin:8px 0 0}
+.sl-v22-relation-sub{color:var(--dsw-alias-label-secondary);font-size:13px;margin:7px 0 0}
+.sl-v22-relation-note{color:var(--dsw-alias-label-secondary);font-size:11px;margin:5px 0 0}
+.sl-v22-relation-body{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:22px;align-items:start;margin-top:22px}
+.sl-v22-relation-body.no-inspector{grid-template-columns:1fr}
+.sl-v22-lanes{display:grid;grid-template-columns:1fr 1.08fr 1fr;gap:16px;min-width:0}
+.sl-v22-lane{min-width:0}
+.sl-v22-lane-title{display:flex;align-items:center;gap:8px;color:var(--dsw-alias-label-secondary);font-size:11px;letter-spacing:.06em;padding-bottom:8px;border-bottom:1px solid var(--dsw-alias-border-l1)}
+.sl-v22-lane-list{display:flex;flex-direction:column;gap:9px;padding-top:10px}
+.sl-v22-node{width:100%;text-align:left;background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l1);border-radius:11px;padding:11px 12px;cursor:pointer}
+.sl-v22-node:hover{border-color:var(--dsw-alias-border-l2)}
+.sl-v22-node.selected{border-color:var(--dsw-alias-brand-primary);box-shadow:inset 2px 0 0 var(--dsw-alias-brand-primary)}
+.sl-v22-node-tag{display:block;color:var(--dsw-alias-label-secondary);font-size:11px;margin-bottom:4px}
+.sl-v22-node-title{display:block;color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.5}
+.sl-v22-node-meta{display:block;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:1.5;margin-top:3px}
+.sl-v22-node.present .sl-v22-node-title{font-size:15px}
+.sl-v22-inspector{position:sticky;top:20px;background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l1);border-radius:14px;padding:16px}
+.sl-v22-inspector .sl-node-detail{padding:0;border:0;background:transparent}
+.sl-v22-inspector-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding-bottom:10px;border-bottom:1px solid var(--dsw-alias-border-l1)}
+.sl-v22-inspector-head span{color:var(--dsw-alias-label-secondary);font-size:11px}
+.sl-v22-correct{border-top:1px solid var(--dsw-alias-border-l1);margin-top:12px;padding-top:12px}
+.sl-v22-correct p{color:var(--dsw-alias-label-secondary);font-size:11px;margin:0 0 6px}
+.sl-v22-correct textarea{width:100%;min-height:60px;resize:vertical;background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1);border-radius:8px;color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;padding:8px;line-height:1.5}
+.sl-v22-correct button{margin-top:7px}
+.sl-v22-empty{color:var(--dsw-alias-label-secondary);font-size:13px;line-height:1.7;padding:14px 0}
+.sl-v22-boundary{padding:24px;color:var(--dsw-alias-label-primary)}
+.sl-v22-boundary strong{display:block;font-size:15px;margin-bottom:8px}
+.sl-v22-boundary p{color:var(--dsw-alias-label-secondary);font-size:13px;line-height:1.6;margin:0 0 6px}
+.sl-v22-drawer-layer{position:fixed;inset:0;z-index:60}
+.sl-v22-backdrop{position:absolute;inset:0;background:var(--dsw-alias-bg-overlay);opacity:.55}
+.sl-v22-drawer{position:absolute;top:0;right:0;bottom:0;width:min(380px,92vw);background:var(--dsw-alias-bg-base);border-left:1px solid var(--dsw-alias-border-l1);display:flex;flex-direction:column;overflow:auto}
+.sl-v22-drawer-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;border-bottom:1px solid var(--dsw-alias-border-l1)}
+.sl-v22-drawer-head strong{font-size:14px}
+.sl-v22-drawer .sl-right{width:100%;flex:1;border-left:0;background:transparent}
+@media (max-width:900px){.sl-v22-scroll,.sl-v22-composer,.sl-v22-relation-scroll{padding-left:20px;padding-right:20px}.sl-v22-relation-body{grid-template-columns:1fr}.sl-v22-inspector{position:static}.sl-v22-lanes{grid-template-columns:1fr}.sl-v22-node{width:100%}}
+`
+
+    class PanelBoundary extends React.Component {
+      constructor(props) {
+        super(props)
+        this.state = { error: null }
+      }
+      static getDerivedStateFromError(error) {
+        return { error }
+      }
+      componentDidCatch(error, info) {
+        try { console.error('[shengluo] panel error', error, info) } catch { /* console may be unavailable */ }
+      }
+      render() {
+        if (this.state.error) {
+          return h('div', { className: 'sl-v22-boundary' }, [
+            h('strong', { key: 't' }, '生络面板出错了'),
+            h('p', { key: 'm' }, String(this.state.error?.message || this.state.error)),
+            h('p', { key: 'h' }, '这不是你的操作问题；把这段文字发给开发者即可。'),
           ])
         }
-        return h(TodayView, { data, approval })
-      })()
+        return this.props.children
+      }
+    }
 
-      return h('div', { className: 'sl-root' }, [
-        h('style', { key: 'css' }, CSS),
-        h('aside', { key: 'nav', className: 'sl-nav' }, [
-          h('div', { key: 'brand', className: 'sl-brand' }, [
-            h('span', { key: 'm', className: 'sl-brand-mark', 'aria-hidden': 'true' }),
-            h('span', { key: 't' }, '生络'),
-          ]),
-          h('nav', { key: 'n', 'aria-label': '生络导航' }, NAV.map((entry) => h('button', {
-            key: entry.id,
-            type: 'button',
-            className: 'sl-nav-item' + (state.view === entry.id ? ' is-active' : ''),
-            'aria-current': state.view === entry.id ? 'page' : undefined,
-            onClick: () => store.set({ view: entry.id }),
-          }, entry.label))),
-          h('div', { key: 'reality', className: 'sl-nav-foot' }, [
-            h('span', {
-              key: 's',
-              className: 'sl-nav-reality ' + (data?.reality?.state === 'authorized' ? 'is-ok' : 'is-unknown'),
-            }, data?.reality?.state === 'authorized' ? '个人现实：已授权' : '个人现实：尚未授权'),
-            h('span', { key: 'n', className: 'sl-nav-note' }, 'DSH 原生插件'),
-          ]),
-        ]),
-        h('main', { key: 'main', className: 'sl-main' }, [body]),
-        h('aside', { key: 'right', className: 'sl-right', 'aria-label': '当前这件事' },
-          h(RightPanel, { data, approval })),
-        state.toast ? h('div', { key: 'toast', className: 'sl-toast', role: 'status' }, state.toast) : null,
+    function ShengluoPanelRoot() {
+      return h(PanelBoundary, null, h(ShengluoPanel))
+    }
+
+    function ShengluoPanel() {
+      const ui = useStore()
+      const [mode, setMode] = React.useState('today')
+      const [selectedNodeId, setSelectedNodeId] = React.useState(null)
+      const [drawerTab, setDrawerTab] = React.useState(null)
+      const [dismissed, setDismissed] = React.useState({})
+
+      React.useEffect(() => { attach(); return undefined }, [])
+
+      const openDrawer = (tab) => {
+        store.set({ rightTab: tab })
+        setDrawerTab(tab)
+      }
+      const openRelation = () => { setMode('relation'); setSelectedNodeId(null) }
+      const closeRelation = () => { setMode('today'); setSelectedNodeId(null) }
+
+      let view
+      if (ui.loading && !ui.loaded) {
+        view = h('div', { className: 'sl-v22-screen' }, h('div', { className: 'sl-v22-scroll' }, h('p', { className: 'sl-v22-note' }, '正在读取真实状态…')))
+      } else if (ui.error) {
+        view = h('div', { className: 'sl-v22-screen' }, h('div', { className: 'sl-v22-scroll' }, h('div', { className: 'sl-v22-error' }, [
+          h('strong', { key: 't' }, '面板读不到状态'),
+          h('p', { key: 'm' }, ui.error),
+          h('button', { key: 'r', type: 'button', className: 'sl-v22-ghost', onClick: () => loadState() }, '重试'),
+        ])))
+      } else if (mode === 'relation') {
+        view = h(V22Relation, { data: ui.data, selectedNodeId, onSelect: setSelectedNodeId, onBack: closeRelation, onConnect: () => openDrawer('connect') })
+      } else {
+        view = h(V22Today, {
+          data: ui.data,
+          today: ui.today ?? ui.data?.today,
+          busy: ui.todayBusy,
+          dismissed,
+          onRelation: openRelation,
+          onAction: onTodayAction,
+          onDismiss: (id) => setDismissed((prev) => ({ ...prev, [id]: true })),
+          onConnect: () => openDrawer('connect'),
+          onWork: () => openDrawer('work'),
+          onScan: () => scanToday({ force: true }),
+          onOpenSession: openNativeSession,
+          ui,
+        })
+      }
+
+      return h('div', { className: 'sl-root sl-v22' }, [
+        h('style', { key: 'css' }, CSS + V22_CSS),
+        h('main', { key: 'main', className: 'sl-v22-main' }, view),
+        h(V22Drawer, { key: 'drawer', data: ui.data, tab: drawerTab, onClose: () => setDrawerTab(null) }),
+        ui.toast ? h('div', { key: 'toast', className: 'sl-toast', role: 'status' }, ui.toast) : null,
       ])
     }
 
-    // ————————————————————————— 样式（只用宿主主题变量，深色浅色都跟着走） —————————————————————————
+    // ————————————————————————— 样式（只用宿主主题变量） —————————————————————————
 
     const CSS = `
-.sl-root{display:flex;flex:1;min-height:0;height:100%;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.55;overflow:hidden}
-.sl-root *{box-sizing:border-box}
-.sl-nav{width:176px;flex:0 0 176px;display:flex;flex-direction:column;gap:14px;padding:16px 12px;background:var(--dsw-specific-sidebar-fill,var(--dsw-alias-bg-layer-1));border-right:1px solid var(--dsw-alias-border-l1)}
-.sl-brand{display:flex;align-items:center;gap:8px;font-weight:600;letter-spacing:.04em;padding:2px 6px}
-.sl-brand-mark{width:12px;height:12px;border-radius:50%;background:var(--dsw-alias-brand-primary);box-shadow:0 0 0 3px color-mix(in srgb,var(--dsw-alias-brand-primary) 18%,transparent)}
-.sl-nav nav{display:flex;flex-direction:column;gap:2px}
-.sl-nav-item{appearance:none;border:0;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;text-align:left;padding:7px 10px;border-radius:8px;cursor:pointer}
-.sl-nav-item:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
-.sl-nav-item.is-active{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font-weight:600}
-.sl-nav-foot{margin-top:auto;display:flex;flex-direction:column;gap:4px;padding:8px 6px 0;border-top:1px solid var(--dsw-alias-border-l1)}
-.sl-nav-reality{font-size:11.5px;color:var(--dsw-alias-label-secondary)}
-.sl-nav-reality.is-ok{color:var(--dsw-alias-state-success-primary)}
-.sl-nav-reality.is-unknown{color:var(--dsw-alias-state-warn-primary)}
-.sl-nav-note{font-size:11px;color:var(--dsw-alias-state-idle-primary)}
-.sl-main{flex:1;min-width:0;display:flex;flex-direction:column;overflow:hidden}
-.sl-stage{flex:1;min-height:0;display:flex;flex-direction:column;overflow:auto;padding:18px 20px 10px}
-.sl-stage-list{padding:24px 28px}
-.sl-h2{font-size:16px;font-weight:600;margin:0 0 14px}
-.sl-h3{font-size:12px;font-weight:600;margin:0 0 8px;color:var(--dsw-alias-label-secondary);letter-spacing:.04em}
-.sl-center{flex:1;min-height:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px}
-.sl-map{position:relative;flex:0 0 auto;margin:0 auto}
+.sl-shell{display:flex;height:100%;min-height:0;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);position:relative}
+.sl-shell-nav{width:132px;flex:0 0 132px;border-right:1px solid var(--dsw-alias-border-l1);padding:14px 10px;display:flex;flex-direction:column;gap:8px}
+.sl-brand{display:flex;align-items:center;gap:8px;font-weight:600;font-size:13px;padding:2px 6px 10px;color:var(--dsw-alias-label-primary)}
+.sl-nav{display:flex;flex-direction:column;gap:2px}
+.sl-nav-item{appearance:none;border:0;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12.5px;text-align:left;padding:7px 10px;border-radius:8px;cursor:pointer}
+.sl-nav-item:hover{background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary)}
+.sl-nav-active{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font-weight:600}
+.sl-main{flex:1;min-width:0;display:flex;flex-direction:column;overflow:auto}
+.sl-stage{flex:1;min-width:0;display:flex;flex-direction:column;gap:10px;padding:16px 18px;overflow:auto}
+.sl-stage-list{padding:18px 22px;gap:12px}
+.sl-today-head{display:flex;flex-direction:column;gap:4px}
+.sl-lanes{display:flex;gap:8px;margin:0 0 6px 0}
+.sl-today-panel{display:flex;flex-direction:column;gap:6px;margin-bottom:10px}
+.sl-today-list{display:flex;flex-direction:column;gap:2px}
+.sl-today-card{margin-top:0}
+.sl-today-evidence{margin:2px 0 0;padding-left:18px;font-size:12px}
+.sl-h2{font-size:15px;font-weight:600;margin:0}
+.sl-h3{font-size:12px;font-weight:600;margin:0 0 4px;color:var(--dsw-alias-label-secondary);letter-spacing:.02em}
+.sl-chips{display:flex;gap:6px;flex-wrap:wrap}
+.sl-chip{font-size:10.5px;padding:2px 8px;border-radius:999px;border:1px solid var(--dsw-alias-border-l1);color:var(--dsw-alias-label-secondary)}
+.sl-chip-btn{appearance:none;background:transparent;font:inherit;font-size:10.5px;cursor:pointer}
+.sl-chip-btn:hover{border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-label-primary)}
+.sl-reply{margin:0;font-size:12.5px;line-height:1.6;white-space:pre-wrap;word-break:break-word}
+.sl-chip-ok{border-color:var(--dsw-alias-state-success-primary);color:var(--dsw-alias-state-success-primary)}
+.sl-center{flex:1;min-height:300px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;position:relative}
+.sl-empty{display:flex;flex-direction:column;gap:10px;align-items:flex-start;max-width:560px;margin:24px auto}
+.sl-empty-states{display:flex;flex-wrap:wrap;gap:8px}
+.sl-static{cursor:default;opacity:.75}
+.sl-phase{font-size:11.5px;color:var(--dsw-alias-label-secondary);text-align:center;max-width:620px}
+.sl-phase-waiting-for-you{color:var(--dsw-alias-state-warn-primary)}
+.sl-phase-failed,.sl-phase-stopped-by-owner{color:var(--dsw-alias-state-error-primary)}
+.sl-phase-completed{color:var(--dsw-alias-state-success-primary)}
+.sl-map{position:relative;width:min(560px,100%);aspect-ratio:1/1;max-height:min(48vh,520px);margin:0 auto}
 .sl-map-svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible}
-.sl-orbit{stroke:var(--dsw-alias-border-l1);stroke-dasharray:3 5;opacity:.8}
-.sl-link{stroke:var(--dsw-alias-brand-primary);stroke-width:1.2;opacity:.42}
-.sl-spoke{stroke:var(--dsw-alias-border-l2);stroke-width:1;opacity:.55}
-.sl-core{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);display:flex;flex-direction:column;align-items:center;gap:10px;pointer-events:none}
-.sl-orb{position:relative;width:104px;height:104px;display:flex;align-items:center;justify-content:center;animation:sl-breathe 9s ease-in-out infinite}
-.sl-orb-halo{position:absolute;inset:-6px;border-radius:50%;background:radial-gradient(circle at 50% 50%,color-mix(in srgb,var(--dsw-alias-state-warn-primary) 20%,transparent) 0%,transparent 66%);filter:blur(3px)}
-.sl-orb-core{position:absolute;inset:10px;border-radius:50%;background:radial-gradient(circle at 50% 47%,var(--dsw-alias-bg-base) 0%,var(--dsw-alias-bg-base) 31%,color-mix(in srgb,var(--dsw-alias-state-warn-primary) 82%,transparent) 43%,color-mix(in srgb,var(--dsw-alias-brand-primary) 34%,transparent) 60%,transparent 76%);box-shadow:0 0 20px color-mix(in srgb,var(--dsw-alias-state-warn-primary) 24%,transparent)}
-.sl-orb-core::after{content:'';position:absolute;inset:26%;border-radius:50%;border:1px dashed color-mix(in srgb,var(--dsw-alias-brand-primary) 52%,transparent);opacity:.85;animation:sl-spin 26s linear infinite}
-@keyframes sl-spin{to{transform:rotate(360deg)}}
-.sl-orb-mark{position:relative;font-size:17px;line-height:1;color:var(--dsw-alias-label-primary);opacity:.95;letter-spacing:-.02em}
-@keyframes sl-breathe{0%,100%{transform:scale(.975);opacity:.92}50%{transform:scale(1.03);opacity:1}}
-@media (prefers-reduced-motion: reduce){.sl-orb{animation:none}.sl-orb-core::after{animation:none}}
-.sl-core-text{display:flex;flex-direction:column;align-items:center;gap:2px;text-align:center}
-.sl-core-text strong{font-size:14px;letter-spacing:.12em}
-.sl-core-text span{font-size:11px;color:var(--dsw-alias-label-secondary);max-width:150px}
-.sl-node-holder{position:absolute;transform:translate(-50%,-50%)}
-.sl-node{appearance:none;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font:inherit;font-size:11.5px;display:flex;flex-direction:column;align-items:flex-start;gap:1px;padding:6px 9px 6px 8px;border-radius:9px;cursor:pointer;max-width:150px;text-align:left;transition:border-color .15s,box-shadow .15s}
-.sl-node:hover{border-color:var(--dsw-alias-border-l2);box-shadow:0 2px 10px rgba(0,0,0,.10)}
-.sl-node.is-active{border-color:var(--dsw-alias-brand-primary);box-shadow:0 0 0 2px color-mix(in srgb,var(--dsw-alias-brand-primary) 22%,transparent)}
+.sl-orbit{stroke:var(--dsw-alias-border-l1);stroke-width:.4;stroke-dasharray:1.5 2}
+.sl-core-line{stroke:var(--dsw-alias-border-l1);stroke-width:.35;opacity:.7}
+.sl-edge{stroke:var(--dsw-alias-brand-primary);stroke-width:.45;opacity:.55}
+.sl-edge-dashed{stroke-dasharray:1.2 1.6;opacity:.35}
+.sl-core{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);display:flex;flex-direction:column;align-items:center;gap:4px;padding:16px;border-radius:50%;border:1px solid var(--dsw-alias-brand-primary);background:radial-gradient(circle at 50% 40%,color-mix(in srgb,var(--dsw-alias-brand-primary) 26%,transparent),transparent 70%);box-shadow:0 0 22px color-mix(in srgb,var(--dsw-alias-brand-primary) 28%,transparent)}
+.sl-core-live{animation:sl-core-breathe 1.1s ease-in-out infinite}
+.sl-core-fail{border-color:var(--dsw-alias-state-error-primary);box-shadow:0 0 22px color-mix(in srgb,var(--dsw-alias-state-error-primary) 30%,transparent)}
+.sl-core-title{font-size:11px;font-weight:600}
+@keyframes sl-core-breathe{0%,100%{box-shadow:0 0 14px color-mix(in srgb,var(--dsw-alias-brand-primary) 22%,transparent)}50%{box-shadow:0 0 30px color-mix(in srgb,var(--dsw-alias-brand-primary) 44%,transparent)}}
+.sl-node{position:absolute;transform:translate(-50%,-50%);appearance:none;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font:inherit;padding:6px 10px;border-radius:10px;display:flex;flex-direction:column;gap:1px;align-items:flex-start;cursor:pointer;max-width:132px;box-shadow:0 1px 6px rgba(0,0,0,.08)}
+.sl-node:hover{border-color:var(--dsw-alias-brand-primary)}
+.sl-node-selected{border-color:var(--dsw-alias-brand-primary);box-shadow:0 0 0 2px color-mix(in srgb,var(--dsw-alias-brand-primary) 28%,transparent)}
+.sl-node-live{animation:sl-node-pulse .9s ease-in-out infinite}
+.sl-node-failed{border-color:var(--dsw-alias-state-error-primary)}
+@keyframes sl-node-pulse{0%,100%{box-shadow:0 0 0 0 color-mix(in srgb,var(--dsw-alias-brand-primary) 0%,transparent)}50%{box-shadow:0 0 0 4px color-mix(in srgb,var(--dsw-alias-brand-primary) 26%,transparent)}}
 .sl-node-dot{width:6px;height:6px;border-radius:50%;background:var(--dsw-alias-state-idle-primary)}
 .sl-node.tone-blue .sl-node-dot{background:var(--dsw-alias-brand-primary)}
 .sl-node.tone-teal .sl-node-dot{background:var(--dsw-alias-state-success-primary)}
 .sl-node.tone-amber .sl-node-dot{background:var(--dsw-alias-state-warn-primary)}
 .sl-node.tone-rose .sl-node-dot{background:var(--dsw-alias-state-error-primary)}
 .sl-node.tone-violet .sl-node-dot{background:var(--dsw-alias-brand-primary);opacity:.7}
-.sl-node-label{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:132px}
-.sl-node-kind{font-size:10px;color:var(--dsw-alias-label-secondary);letter-spacing:.03em}
-.sl-relations{list-style:none;margin:8px 0 0;padding:0;display:flex;flex-wrap:wrap;gap:5px;justify-content:center;max-width:600px}
-.sl-relation{appearance:none;border:1px dashed var(--dsw-alias-border-l1);background:color-mix(in srgb,var(--dsw-alias-bg-layer-1) 60%,transparent);color:var(--dsw-alias-label-secondary);font:inherit;font-size:10.5px;padding:2px 8px;border-radius:999px;cursor:default;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.sl-node-detail{border:1px solid var(--dsw-alias-border-l1);border-radius:10px;padding:10px 12px;background:var(--dsw-alias-bg-layer-1);max-width:520px;width:100%}
-.sl-row{display:flex;align-items:center;justify-content:space-between;gap:10px}
-.sl-hint{font-size:11px;color:var(--dsw-alias-state-idle-primary);text-align:center;margin:2px 0 0}
-.sl-composer{padding:10px 0 2px;display:flex;flex-direction:column;gap:8px;max-width:760px;width:100%;margin:0 auto}
-.sl-input-row{display:flex;gap:8px;align-items:center}
+.sl-node-label{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:118px;font-size:11.5px}
+.sl-node-kind{font-size:9.5px;color:var(--dsw-alias-label-secondary);letter-spacing:.03em}
+.sl-node-detail{border:1px solid var(--dsw-alias-border-l1);border-radius:10px;padding:10px 12px;background:var(--dsw-alias-bg-layer-1);max-width:520px;width:100%;display:flex;flex-direction:column;gap:4px;align-items:flex-start}
+.sl-row{display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%}
+.sl-hint{font-size:10.5px;color:var(--dsw-alias-state-idle-primary);text-align:center;margin:2px 0 0}
+.sl-composer{padding:8px 0 2px;display:flex;flex-direction:column;gap:8px;max-width:760px;width:100%;margin:0 auto}
+.sl-input-row{display:flex;gap:8px;align-items:center;width:100%}
 .sl-input{flex:1;min-width:0;appearance:none;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;padding:9px 12px;border-radius:10px}
 .sl-input:focus{outline:none;border-color:var(--dsw-alias-brand-primary);box-shadow:0 0 0 2px color-mix(in srgb,var(--dsw-alias-brand-primary) 20%,transparent)}
 .sl-input:disabled{opacity:.6}
@@ -884,34 +1415,40 @@ window.__ModuleLoader__.load({
 .sl-small{font-size:11px;padding:4px 9px}
 .sl-link-btn{color:var(--dsw-alias-brand-primary);font-size:12px;text-decoration:none;border-bottom:1px solid color-mix(in srgb,var(--dsw-alias-brand-primary) 40%,transparent);align-self:flex-start}
 .sl-link-btn:hover{text-decoration:none;border-bottom-color:var(--dsw-alias-brand-primary)}
-.sl-contract{border:1px solid var(--dsw-alias-border-l1);border-radius:10px;padding:10px 12px;background:var(--dsw-alias-bg-layer-1)}
-.sl-contract-title{font-weight:600;margin-bottom:6px}
-.sl-contract dl{display:grid;grid-template-columns:78px 1fr;gap:4px 10px;margin:0;font-size:12px}
-.sl-contract dt{color:var(--dsw-alias-label-secondary)}
-.sl-contract dd{margin:0}
-.sl-right{width:320px;flex:0 0 320px;border-left:1px solid var(--dsw-alias-border-l1);overflow:auto;background:var(--dsw-alias-bg-base)}
-.sl-right-inner{display:flex;flex-direction:column;gap:0;padding:16px 16px 24px}
+.sl-right{width:340px;flex:0 0 340px;border-left:1px solid var(--dsw-alias-border-l1);overflow:auto;background:var(--dsw-alias-bg-base);display:flex;flex-direction:column}
+.sl-right-tabs{display:flex;gap:2px;padding:10px 12px 0;border-bottom:1px solid var(--dsw-alias-border-l1)}
+.sl-tabs{display:flex;gap:2px}
+.sl-tab{appearance:none;border:0;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;padding:6px 10px;border-radius:8px 8px 0 0;cursor:pointer;border-bottom:2px solid transparent}
+.sl-tab-active{color:var(--dsw-alias-label-primary);border-bottom-color:var(--dsw-alias-brand-primary);font-weight:600}
+.sl-right-inner{display:flex;flex-direction:column;gap:0;padding:12px 16px 24px;overflow:auto}
 .sl-block{padding:12px 0;border-bottom:1px solid var(--dsw-alias-border-l1)}
 .sl-block:last-child{border-bottom:0}
 .sl-focus{margin:0 0 4px;font-size:13.5px;font-weight:600}
-.sl-strong{font-weight:600;margin:0 0 4px}
-.sl-muted{color:var(--dsw-alias-label-secondary);margin:2px 0;font-size:12px}
+.sl-strong{font-weight:600;margin:0 0 4px;font-size:12.5px}
+.sl-muted{color:var(--dsw-alias-label-secondary);margin:2px 0;font-size:12px;line-height:1.5}
 .sl-bullets,.sl-sources,.sl-decisions{list-style:none;margin:4px 0 0;padding:0;display:flex;flex-direction:column;gap:5px;font-size:12px}
 .sl-bullets li,.sl-sources li,.sl-decisions li{color:var(--dsw-alias-label-secondary);position:relative;padding-left:11px}
 .sl-bullets li::before,.sl-sources li::before,.sl-decisions li::before{content:'';position:absolute;left:0;top:7px;width:4px;height:4px;border-radius:50%;background:var(--dsw-alias-border-l2)}
 .sl-decisions li strong{display:block;color:var(--dsw-alias-label-primary)}
-.sl-card{border:1px solid var(--dsw-alias-border-l1);border-radius:10px;padding:10px 11px;margin-top:10px;background:var(--dsw-alias-bg-layer-1);display:flex;flex-direction:column;gap:7px;align-items:flex-start}
+.sl-decisions li button{margin-top:4px}
+.sl-card{border:1px solid var(--dsw-alias-border-l1);border-radius:10px;padding:10px 11px;margin-top:10px;background:var(--dsw-alias-bg-layer-1);display:flex;flex-direction:column;gap:7px;align-items:flex-start;width:100%}
+.sl-card .sl-input{width:100%}
 .sl-card-title{font-weight:600;font-size:12.5px}
 .sl-code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:16px;letter-spacing:.14em;padding:5px 10px;border-radius:8px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
 .sl-scopes{list-style:none;margin:2px 0;padding:0;display:flex;flex-direction:column;gap:4px;font-size:11.5px;color:var(--dsw-alias-label-secondary)}
 .sl-scopes li{position:relative;padding-left:12px}
 .sl-scopes li::before{content:'';position:absolute;left:0;top:6px;width:4px;height:4px;border-radius:50%;background:var(--dsw-alias-state-success-primary)}
-.sl-ok{color:var(--dsw-alias-state-success-primary);font-size:12px}
-.sl-approval{border:1px solid var(--dsw-alias-state-warn-primary);border-radius:9px;padding:8px 10px;margin-top:8px;display:flex;flex-direction:column;gap:6px;align-items:flex-start}
-.sl-approval p{margin:0;font-size:12px;color:var(--dsw-alias-label-primary)}
-.sl-approval-inline{font-size:11.5px;color:var(--dsw-alias-state-warn-primary);margin:0;text-align:center}
-.sl-error-note{font-size:11.5px;color:var(--dsw-alias-state-error-primary);margin:4px 0 0}
-.sl-conversation{margin-top:8px;border-top:1px dashed var(--dsw-alias-border-l1);padding-top:8px;display:flex;flex-direction:column;gap:4px}
+.sl-steps{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.sl-step{display:grid;grid-template-columns:52px 1fr;gap:2px 8px;font-size:11.5px;padding:6px 8px;border:1px solid var(--dsw-alias-border-l1);border-radius:8px}
+.sl-step-time{color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}
+.sl-step-verb{font-weight:600}
+.sl-step-target{color:var(--dsw-alias-label-secondary);grid-column:1/3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sl-step-status{grid-column:1/3;font-size:10.5px}
+.sl-step-ok .sl-step-status{color:var(--dsw-alias-state-success-primary)}
+.sl-step-failed .sl-step-status{color:var(--dsw-alias-state-error-primary)}
+.sl-step-running .sl-step-status{color:var(--dsw-alias-brand-primary)}
+.sl-error-note{font-size:11px;color:var(--dsw-alias-state-error-primary);margin:0;grid-column:1/3}
+.sl-conversation{margin-top:8px;border-top:1px dashed var(--dsw-alias-border-l1);padding-top:8px;display:flex;flex-direction:column;gap:4px;width:100%}
 .sl-messages{list-style:none;margin:2px 0 0;padding:0;display:flex;flex-direction:column;gap:6px;max-height:220px;overflow:auto}
 .sl-messages li{display:flex;gap:6px;font-size:11.5px;line-height:1.5}
 .sl-who{flex:0 0 30px;color:var(--dsw-alias-label-secondary)}
@@ -920,6 +1457,9 @@ window.__ModuleLoader__.load({
 .sl-list-item{border:1px solid var(--dsw-alias-border-l1);border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:3px;background:var(--dsw-alias-bg-layer-1)}
 .sl-error{border:1px solid var(--dsw-alias-state-error-primary);border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:8px;align-items:flex-start}
 .sl-toast{position:absolute;left:50%;bottom:22px;transform:translateX(-50%);background:var(--dsw-alias-bg-overlay);border:1px solid var(--dsw-alias-border-l1);border-radius:9px;padding:8px 14px;font-size:12px;box-shadow:0 6px 22px rgba(0,0,0,.18);z-index:5;max-width:70%}
+@media (prefers-reduced-motion: reduce){.sl-core-live,.sl-node-live{animation:none}}
+@media (max-width: 960px){.sl-right{display:none}.sl-shell-nav{width:96px;flex-basis:96px}}
+@media (max-width: 720px){.sl-shell{flex-direction:column}.sl-shell-nav{width:auto;flex:0 0 auto;flex-direction:row;align-items:center;border-right:0;border-bottom:1px solid var(--dsw-alias-border-l1);overflow-x:auto}.sl-nav{flex-direction:row}.sl-brand{padding:0 8px 0 2px}.sl-main{min-height:0}}
 `
 
     // ————————————————————————— 注册 —————————————————————————
@@ -928,22 +1468,8 @@ window.__ModuleLoader__.load({
       ctxRef = ctx
 
       ctx.effect(() => ctx.locale.register(NS, {
-        zh: {
-          panel: '生络',
-          today: '今天',
-          projects: '项目',
-          artifacts: '成果',
-          knowledge: '知识',
-          plugins: '插件',
-        },
-        en: {
-          panel: 'ShengLuo',
-          today: 'Today',
-          projects: 'Projects',
-          artifacts: 'Artifacts',
-          knowledge: 'Knowledge',
-          plugins: 'Plugins',
-        },
+        zh: { panel: '生络', today: '今天', goals: '目标', projects: '项目', artifacts: '成果', knowledge: '知识', connect: '连接' },
+        en: { panel: 'ShengLuo', today: 'Today', goals: 'Goals', projects: 'Projects', artifacts: 'Deliverables', knowledge: 'Knowledge', connect: 'Connections' },
       }), 'shengluo: locale')
 
       ctx.effect(() => ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
@@ -955,11 +1481,11 @@ window.__ModuleLoader__.load({
       }, PanelIcon)), 'shengluo: sidebar entry')
 
       ctx.effect(() => ctx.slots.inject('main', function* () {
-        yield ctx.slots.register({ name: 'main', key: PANEL_ID, locale: NS }, ShengluoPanel)
+        yield ctx.slots.register({ name: 'main', key: PANEL_ID, locale: NS }, ShengluoPanelRoot)
       }), 'shengluo: main panel')
 
       ctx.effect(() => () => {
-        if (eventSource) { try { eventSource.close() } catch {} eventSource = null }
+        if (eventSource) { try { eventSource.close() } catch { /* 已经关了 */ } eventSource = null }
         if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
         attached = false
         stopDevicePolling()
