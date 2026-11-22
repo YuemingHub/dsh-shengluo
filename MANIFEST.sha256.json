@@ -2,8 +2,8 @@
   "package": "@shengluo/dsh-plugin",
   "version": "1.0.2",
   "sourceRepo": "https://github.com/YuemingHub/ShengLuo",
-  "sourceCommit": "d6838795ffb1aa9c5ce8d52744fd4b2c8342fe76",
-  "generatedAt": "2026-11-22T18:13:56.199Z",
+  "sourceCommit": "944cab30414536cce23f9d01b7dfe773d6d95620",
+  "generatedAt": "2026-11-22T18:15:47.086Z",
   "files": [
     {
       "path": "client.js",
