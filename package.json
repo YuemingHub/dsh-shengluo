@@ -1,6 +1,6 @@
 {
   "name": "@shengluo/dsh-plugin",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "type": "module",
   "description": "生络 ShengLuo：以人为单位的个人智能伙伴。原生 DSH 侧栏入口、语义神经网络、真实原生会话与成果。",
   "license": "MIT",
@@ -23,8 +23,7 @@
     "docs",
     "cordis.patch.yml",
     "icon.svg",
-    "README.md",
-    "LICENSE"
+    "README.md"
   ],
   "icon": "./icon.svg",
   "dsh": {
@@ -46,22 +45,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/YuemingHub/dsh-shengluo.git"
+    "url": "git+https://github.com/YuemingHub/ShengLuo.git",
+    "directory": "packages/shengluo-dsh-plugin"
   },
-  "homepage": "https://github.com/YuemingHub/dsh-shengluo",
+  "homepage": "https://github.com/YuemingHub/ShengLuo/tree/main/packages/shengluo-dsh-plugin",
   "bugs": {
-    "url": "https://github.com/YuemingHub/dsh-shengluo/issues"
-  },
-  "keywords": [
-    "dsh",
-    "dsh-plugin",
-    "deepseek-harness",
-    "shengluo",
-    "personal-intelligence",
-    "family-space"
-  ],
-  "scripts": {
-    "test": "node tests/run-all.mjs",
-    "build:client": "node scripts/build-plugin-client.mjs"
+    "url": "https://github.com/YuemingHub/ShengLuo/issues"
   }
 }
